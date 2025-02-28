@@ -349,7 +349,7 @@ def calculate_era5_climatology(era_path, save_dir, params, start, end):
 
 ## MASKING ##
 
-def apply_land_sea_mask(data_path, mask_path):
+def apply_land_sea_mask(data_path, mask_path, threshhold):
     '''
     Applies the IFS land-sea mask to the given data field and saves as a new file
 
@@ -361,8 +361,9 @@ def apply_land_sea_mask(data_path, mask_path):
     '''
     ds = xr.open_dataset(data_path)
     mask = xr.open_dataset(mask_path)
-    
-    return
+    mask = xr.where(mask >= threshhold, 1, np.nan).broadcast_like(ds)
+    masked = mask[list(mask.keys())[0]] * ds
+    return ds
 
 ## RMSE ##
 def calculate_RMSE(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, lead_times):
