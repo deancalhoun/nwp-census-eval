@@ -128,5 +128,18 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Nohup
-nohup.out
+# Out
+*.out
+
+# NC
+*.nc
+
+# PNG/PDF
+*.png
+*.pdf
+
+# Path
+*.pth
+
+# TIF
+*.tif
