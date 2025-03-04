@@ -9,8 +9,8 @@ from preprocessing import calculate_acc
 
 ## Define parameters
 # ERA
-era_path = '/glade/campaign/collections/rda/data/d633000/e5.oper.an.sfc/'
-era_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/era5'
+era_dir = '/glade/campaign/collections/rda/data/d633000/e5.oper.an.sfc/'
+era_save_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/era5'
 params = ['t2m']
 start_era = '1991-01-01'
 end_era = '2020-12-31'
@@ -27,8 +27,8 @@ save_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/scores'
 
 ## Calculate ERA5 climatology
 era_files = calculate_era5_climatology(
-    era_path = era_path,
-    save_dir = era_dir,
+    era_dir = era_dir,
+    save_dir = era_save_dir,
     params = params,
     start = start_era,
     end = end_era
