@@ -4,7 +4,7 @@ from preprocessing import retrieve_aifs_forecast, retrieve_ifs_forecast, retriev
 ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/fc'
 ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/an'
 aifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_aifs/fc'
-lsm_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/lsm'
+lsm_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/land_sea_mask'
 
 # Define parameters
 start_ifs = '2016-01-01'
