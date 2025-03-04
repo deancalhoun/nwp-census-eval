@@ -312,6 +312,7 @@ def calculate_era5_climatology(era_path, save_dir, params, start, end):
         filenames: list of saved climatology files (list of str)
     '''
     filenames = list()
+    os.makedirs(save_dir, exist_ok=True)
     dates = pd.date_range(start=start, end=end, freq='D')
     
     for param in params:
@@ -390,6 +391,7 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
         filenames: list of saved RMSE files (list of str)
     '''
     filenames = list()
+    os.makedirs(save_dir, exist_ok=True)
     an_path = an_dir + '/*/*/*/*.nc'
     an_files = sorted(glob.glob(an_path))
     ds_an = xr.open_mfdataset(an_files)
@@ -424,7 +426,7 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
     return filenames
 
 ## ACC ##
-def calculate_acc(fc_dir, an_path, c_path, save_path, lead_times, model):
+def calculate_acc(fc_dir, an_path, c_path, save_dir, lead_times, model):
     '''
     Calculates the anomaly correlation coefficient between forecast and analysis data for a given model and lead times over the specified date range
 
@@ -441,6 +443,7 @@ def calculate_acc(fc_dir, an_path, c_path, save_path, lead_times, model):
         filenames: list of saved ACC files (list of str)
     '''
     filenames = list()
+    os.makedirs(save_dir, exist_ok=True)
     an_path = an_dir + '/*/*/*/*.nc'
     an_files = sorted(glob.glob(an_path))
     ds_an = xr.open_mfdataset(an_files)
