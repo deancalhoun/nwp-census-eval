@@ -4,8 +4,8 @@ import pandas as pd
 import datetime as dt
 import glob as glob
 from preprocessing import calculate_era5_climatology
-from preprocessing import calculate_RMSE
-from preprocessing import calculate_ACC
+from preprocessing import calculate_rmse
+from preprocessing import calculate_acc
 
 ## Define parameters
 # ERA
@@ -36,7 +36,7 @@ era_files = calculate_era5_climatology(
 
 ## Calculate RMSE
 # IFS
-ifs_rmse_files = calculate_RMSE(
+ifs_rmse_files = calculate_rmse(
     fc_dir = ifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
@@ -48,7 +48,7 @@ ifs_rmse_files = calculate_RMSE(
 )
 
 # AIFS
-aifs_rmse_files = calculate_RMSE(
+aifs_rmse_files = calculate_rmse(
     fc_dir = aifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
@@ -61,7 +61,7 @@ aifs_rmse_files = calculate_RMSE(
 
 ## Calculate ACC
 # IFS
-ifs_acc_files = calculate_ACC(
+ifs_acc_files = calculate_acc(
     fc_dir = ifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
@@ -73,7 +73,7 @@ ifs_acc_files = calculate_ACC(
 )
 
 # AIFS
-aifs_acc_files = calculate_ACC(
+aifs_acc_files = calculate_acc(
     fc_dir = aifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
