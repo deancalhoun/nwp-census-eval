@@ -14,6 +14,7 @@ from dateutil.relativedelta import relativedelta
 def retrieve_aifs_forecast(target_dir, start, end, params, init_times, lead_times, bounds):
     '''
     Downloads AIFS forecast data from ECMWF MARS archive
+
     Inputs:
         target_dir: parent directory to save data within (str)
         start: start date (str, YYYY-MM-DD)
@@ -366,8 +367,58 @@ def apply_land_sea_mask(data_path, mask_path, threshhold):
     return ds
 
 ## RMSE ##
-def calculate_RMSE(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, lead_times):
+def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, lead_times):
     '''
+    Calculates the root mean squared error between forecast and analysis data for a given model and lead times over the specified date range
+
+    Inputs:
+        fc_dir: directory of forecast files (str)
+        an_dir: directory of analysis files (str)
+        clim_path: path for climatology file (str)
+        save_dir: directory to save in (str)
+        model_name: name of forecast model (str)
+        start: start date (str, YYYY-MM-DD)
+        end: end date (str, YYYY-MM-DD)
+        lead_times: list of forecast lead times to evaluate (list of str)
+    Outputs:
+        None
+    '''
+    an_path = an_dir + '/*/*/*/*.nc'
+    an_files = sorted(glob.glob(an_path))
+    ds_an = xr.open_mfdataset(an_files)
+    ds_clim = xr.open_dataset(clim_path)
+    
+    for lead_time in lead_times:
+        fc_path = fc_dir + f'/*/{lead_time}/*/*/*.nc'
+        fc_files = sorted(glob.glob(fc_path))
+        ds_fc = xr.open_mfdataset(fc_files)
+        ds_fc = ds_fc.sel(time=slice(start, end)) # restrict to dates of interest
+        ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29))) # remove leap year
+        var_names = list(ds_fc.keys())
+        for var_name in var_names:
+            common_times = np.intersect1d(ds_fc[var_name].time.values, ds_an[var_name].time.values) # ensure all times present in both fc and an
+            ds_fc = ds_fc.sel(time=common_times)
+            var_fc = ds_fc[var_name].values
+            var_an = ds_an.sel(time=common_times)[var_name].values
+            ds_fc = ds_fc.assign_coords(dayofyear = pd.to_datetime(ds_fc.time.dt.strftime('2017-%m-%d')).dayofyear) # get day of year
+            var_clim = ds_clim.sel(time=ds_fc.dayofyear.values)[var_name].values # align climatology to forecast data
+            mse = ((var_fc - var_clim)**2).mean(axis=0) + ((var_an - var_clim)**2).mean(axis=0) - (2*(var_fc - var_clim)*(var_an - var_clim)).mean(axis=0)
+            rmse = np.sqrt(mse)
+            rmse_dataset = xr.Dataset({
+                            f'{var_name}_rmse': (['latitude','longitude'], rmse),
+                            },
+                            coords =
+                            {'latitude' : (['latitude'], ds_fc.latitude.values),
+                            'longitude' : (['longitude'], ds_fc.longitude.values)
+                            })                                           
+            rmse_dataset.to_netcdf(f'{save_dir}/{model_name}_{var_name}_rmse_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
+    return
+
+## ACC ##
+def calculate_acc(fc_dir, an_path, c_path, save_path, lead_times, model):
+    '''
+    Calculates the anomaly correlation coefficient between forecast and analysis data for a given model and lead times over the specified date range
+
     Inputs:
         fc_dir: directory of forecast files (str)
         an_dir: directory of analysis files (str)
@@ -398,27 +449,15 @@ def calculate_RMSE(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
         var_an = ds_an.sel(time=common_times)[var_name].values
         ds_fc = ds_fc.assign_coords(dayofyear = pd.to_datetime(ds_fc.time.dt.strftime('2017-%m-%d')).dayofyear) # get day of year
         var_clim = ds_clim.sel(time=ds_fc.dayofyear.values)[var_name].values # align climatology to forecast data
+
         mse = ((var_fc - var_clim)**2).mean(axis=0) + ((var_an - var_clim)**2).mean(axis=0) - (2*(var_fc - var_clim)*(var_an - var_clim)).mean(axis=0)
         rmse = np.sqrt(mse)
-        rmse_dataset = xr.Dataset({
-                         f'{var_name}_RMSE': (['latitude','longitude'], rmse), # average across all years
+        acc_dataset = xr.Dataset({
+                         f'{var_name}_acc': (['latitude','longitude'], acc), # average across all years
                         },
                          coords =
                         {'latitude' : (['latitude'], ds_fc.latitude.values),
                          'longitude' : (['longitude'], ds_fc.longitude.values) # transform longitude from
                         })                                           
         rmse_dataset.to_netcdf(f'{save_dir}/{model_name}_{var_name}_RMSE_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
-    return
-
-## ACC ##
-def calculate_ACC(fc_dir, an_path, c_path, save_path, lead_times, model):
-    '''
-    Inputs:
-        fc_dir: directory of forecast files = /glade/derecho/scratch/dcalhoun/ecmwf_ifs/fc/t2m
-        an_path: path for analysis files
-        clim_path: path for climatology file
-        save_path: directory to save in
-    Outputs:
-        None
-    '''
     return
