@@ -8,20 +8,25 @@ from preprocessing import calculate_RMSE
 from preprocessing import calculate_ACC
 
 ## Define parameters
+# ERA
 era_path = '/glade/campaign/collections/rda/data/d633000/e5.oper.an.sfc/'
-era_dir = '/glade/derecho/scratch/dcalhoun/era5'
+era_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/era5'
 params = ['t2m']
-start_era = 
-end_era = 
-start_ifs = 
-start_aifs = 
-end = 
-ifs_dir = 
-aifs_dir = 
-lead_times = 
+start_era = '1991-01-01'
+end_era = '2020-12-31'
+
+# IFS/AIFS
+start_ifs = '2024-03-01'
+start_aifs = '2024-03-01'
+end = '2024-12-31'
+ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an'
+ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc'
+aifs_fc_dir = 'glade/derecho/scratch/dcalhoun/ecmwf/aifs/fc'
+lead_times = ['06', '12', '24']
+save_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/scores'
 
 ## Calculate ERA5 climatology
-calculate_era5_climatology(
+era_files = calculate_era5_climatology(
     era_path = era_path,
     save_dir = era_dir,
     params = params,
@@ -31,50 +36,50 @@ calculate_era5_climatology(
 
 ## Calculate RMSE
 # IFS
-calculate_RMSE(
-    fc_dir = ,
-    an_dir = ,
-    clim_path = ,
-    save_dir = ,
-    model_name = ,
-    start = ,
-    end = ,
-    lead_times = 
+ifs_rmse_files = calculate_RMSE(
+    fc_dir = ifs_fc_dir,
+    an_dir = ifs_an_dir,
+    clim_path = era_files[0],
+    save_dir = save_dir+'/ifs/rmse',
+    model_name = 'ifs',
+    start = start_ifs,
+    end = end,
+    lead_times = lead_times
 )
 
 # AIFS
-calculate_RMSE(
-    fc_dir = ,
-    an_dir = ,
-    clim_path = ,
-    save_dir = ,
-    model_name = ,
-    start = ,
-    end = ,
-    lead_times = 
+aifs_rmse_files = calculate_RMSE(
+    fc_dir = aifs_fc_dir,
+    an_dir = ifs_an_dir,
+    clim_path = era_files[0],
+    save_dir = save_dir+'/aifs/rmse',
+    model_name = 'aifs',
+    start = start_aifs,
+    end = end,
+    lead_times = lead_times
 )
 
 ## Calculate ACC
 # IFS
-calculate_ACC(
-    fc_dir = ,
-    an_dir = ,
-    clim_path = ,
-    save_dir = ,
-    model_name = ,
-    start = ,
-    end = ,
-    lead_times = 
+ifs_acc_files = calculate_ACC(
+    fc_dir = ifs_fc_dir,
+    an_dir = ifs_an_dir,
+    clim_path = era_files[0],
+    save_dir = save_dir+'/ifs/acc',
+    model_name = 'ifs',
+    start = start_ifs,
+    end = end,
+    lead_times = lead_times
 )
 
 # AIFS
-calculate_ACC(
-    fc_dir = ,
-    an_dir = ,
-    clim_path = ,
-    save_dir = ,
-    model_name = ,
-    start = ,
-    end = ,
-    lead_times = 
+aifs_acc_files = calculate_ACC(
+    fc_dir = aifs_fc_dir,
+    an_dir = ifs_an_dir,
+    clim_path = era_files[0],
+    save_dir = save_dir+'/aifs/acc',
+    model_name = 'aifs',
+    start = start_aifs,
+    end = end,
+    lead_times = lead_times
 )
