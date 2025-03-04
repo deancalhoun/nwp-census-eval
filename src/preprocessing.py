@@ -450,13 +450,13 @@ def calculate_acc(fc_dir, an_path, c_path, save_path, lead_times, model):
             var_an = ds_an.sel(time=common_times)[var_name].values
             ds_fc = ds_fc.assign_coords(dayofyear = pd.to_datetime(ds_fc.time.dt.strftime('2017-%m-%d')).dayofyear) # get day of year
             var_clim = ds_clim.sel(time=ds_fc.dayofyear.values)[var_name].values # align climatology to forecast data
-            acc = ...
-            rmse_dataset = xr.Dataset({
+            acc = ((var_fc - var_clim) * (var_an - var_clim)).mean(axis=0) / np.sqrt(((var_fc - var_clim)**2).mean(axis=0) * ((var_an - var_clim)**2).mean(axis=0))
+            acc_dataset = xr.Dataset({
                             f'{var_name}_acc': (['latitude','longitude'], acc),
                             },
                             coords =
                             {'latitude' : (['latitude'], ds_fc.latitude.values),
                             'longitude' : (['longitude'], ds_fc.longitude.values)
                             })                                           
-            rmse_dataset.to_netcdf(f'{save_dir}/{model_name}_{var_name}_acc_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
+            acc_dataset.to_netcdf(f'{save_dir}/{model_name}_{var_name}_acc_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
     return
