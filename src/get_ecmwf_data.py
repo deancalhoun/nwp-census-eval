@@ -1,10 +1,12 @@
 from preprocessing import retrieve_aifs_forecast, retrieve_ifs_forecast, retrieve_ifs_analysis, retrieve_land_sea_mask
 
+# Define directories
 ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/fc'
 ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/an'
 aifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_aifs/fc'
 lsm_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/lsm'
 
+# Define parameters
 start_ifs = '2016-01-01'
 start_aifs = '2024-03-01'
 end = '2024-12-31'
@@ -15,7 +17,7 @@ valid_times = ['00', '06', '12', '18']
 grids = ['0.25', '0.125']
 bounds = ['90','-180','0','0'] # Northwest Quadrant
 
-
+# Retrieve data
 retrieve_ifs_forecast(
     target_dir = ifs_fc_dir,
     start = start_ifs,
