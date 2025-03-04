@@ -298,7 +298,7 @@ def retrieve_land_sea_mask(target_dir, grids, bounds):
 ### PROCESSING DATA ###
 
 ## CLIMATOLOGY ##
-def calculate_era5_climatology(era_path, save_dir, params, start, end):
+def calculate_era5_climatology(era_dir, save_dir, params, start, end):
     '''
     Calculates climatology of a given variable from GLADE ERA5 data
 
