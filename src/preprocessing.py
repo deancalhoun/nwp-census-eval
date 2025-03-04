@@ -309,11 +309,14 @@ def calculate_era5_climatology(era_path, save_dir, params, start, end):
         start: climatology period start date (str, YYYY-MM-DD)
         end: climatology period end date (str, YYYY-MM-DD)
     Outputs:
-        None
+        filenames: list of saved climatology files (list of str)
     '''
+    filenames = list()
     dates = pd.date_range(start=start, end=end, freq='D')
+    
     for param in params:
         outfile = f'{save_dir}/era5_{param}_climatology_{"".join(start.split("-")[:1])}_{"".join(end.split("-")[:1])}.nc'
+        filenames.append(outfile)
         if os.path.exists(outfile): # Skip already calculated climatology
             continue
         for i, date in enumerate(dates):
@@ -349,7 +352,7 @@ def calculate_era5_climatology(era_path, save_dir, params, start, end):
                              'longitude' : (['longitude'], (((ds_era.longitude.values + 180) % 360) - 180)) # transform longitude from
                             })                                                                              # [0, 360] to [-180, 180]
         climatology_dataset.to_netcdf(outfile)
-    return
+    return filenames
 
 ## MASKING ##
 
@@ -384,8 +387,9 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
         end: end date (str, YYYY-MM-DD)
         lead_times: list of forecast lead times to evaluate (list of str)
     Outputs:
-        None
+        filenames: list of saved RMSE files (list of str)
     '''
+    filenames = list()
     an_path = an_dir + '/*/*/*/*.nc'
     an_files = sorted(glob.glob(an_path))
     ds_an = xr.open_mfdataset(an_files)
@@ -399,6 +403,8 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
         ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29))) # remove leap year
         var_names = list(ds_fc.keys())
         for var_name in var_names:
+            outfile = f'{save_dir}/{model_name}_{var_name}_rmse_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc'
+            filenames.append(outfile)
             common_times = np.intersect1d(ds_fc[var_name].time.values, ds_an[var_name].time.values) # ensure all times present in both fc and an
             ds_fc = ds_fc.sel(time=common_times)
             var_fc = ds_fc[var_name].values
@@ -414,8 +420,8 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
                             {'latitude' : (['latitude'], ds_fc.latitude.values),
                             'longitude' : (['longitude'], ds_fc.longitude.values)
                             })                                           
-            rmse_dataset.to_netcdf(f'{save_dir}/{model_name}_{var_name}_rmse_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
-    return
+            rmse_dataset.to_netcdf(outfile)
+    return filenames
 
 ## ACC ##
 def calculate_acc(fc_dir, an_path, c_path, save_path, lead_times, model):
@@ -432,8 +438,9 @@ def calculate_acc(fc_dir, an_path, c_path, save_path, lead_times, model):
         end: end date (str, YYYY-MM-DD)
         lead_times: list of forecast lead times to evaluate (list of str)
     Outputs:
-        None
+        filenames: list of saved ACC files (list of str)
     '''
+    filenames = list()
     an_path = an_dir + '/*/*/*/*.nc'
     an_files = sorted(glob.glob(an_path))
     ds_an = xr.open_mfdataset(an_files)
@@ -447,6 +454,8 @@ def calculate_acc(fc_dir, an_path, c_path, save_path, lead_times, model):
         ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29))) # remove leap year
         var_names = list(ds_fc.keys())
         for var_name in var_names:
+            outfile = f'{save_dir}/{model_name}_{var_name}_acc_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc'
+            filenames.append(outfile)
             common_times = np.intersect1d(ds_fc[var_name].time.values, ds_an[var_name].time.values) # ensure all times present in both fc and an
             ds_fc = ds_fc.sel(time=common_times)
             var_fc = ds_fc[var_name].values
@@ -461,5 +470,5 @@ def calculate_acc(fc_dir, an_path, c_path, save_path, lead_times, model):
                             {'latitude' : (['latitude'], ds_fc.latitude.values),
                             'longitude' : (['longitude'], ds_fc.longitude.values)
                             })                                           
-            acc_dataset.to_netcdf(f'{save_dir}/{model_name}_{var_name}_acc_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
-    return
+            acc_dataset.to_netcdf(outfile)
+    return filenames
