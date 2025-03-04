@@ -332,7 +332,7 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
             if date.day == 1:
                 # Read in ERA files
                 path = era_dir + f'{date.strftime("%Y%m")}/*{param}*.nc'
-                era_file = glob.glob(path)[0]
+                era_file = glob.glob(path)
                 ds_era = xr.open_dataset(era_file)
                 ds_era = ds_era.assign_coords(time=pd.to_datetime(ds_era.time))
     
