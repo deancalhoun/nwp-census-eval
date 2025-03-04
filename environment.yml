@@ -1,29 +1,18 @@
-name: ai2es
+name: ae_fc_error
 channels:
   - conda-forge
 dependencies:
-  - python=3.8
+  - python=3.10
   - numpy
   - scipy
   - matplotlib
   - xarray
   - netcdf4
-  - dask
   - pandas
   - scikit-learn
-  - pyyaml
-  - pytest
   - distributed
-  - pip
   - pyproj
   - jupyter
   - jupyterlab
   - cartopy
-  - tqdm
-  - sphinx
-  - numba
-  - cython
-  - pip:
-    - tensorflow
-    - tensorflow-probability
-    - .
+  - tensorflow
