@@ -313,6 +313,9 @@ def calculate_era5_climatology(era_path, save_dir, params, start, end):
     '''
     dates = pd.date_range(start=start, end=end, freq='D')
     for param in params:
+        outfile = f'{save_dir}/era5_{param}_climatology_{"".join(start.split("-")[:1])}_{"".join(end.split("-")[:1])}.nc'
+        if os.path.exists(outfile): # Skip already calculated climatology
+            continue
         for i, date in enumerate(dates):
             if date.dayofyear == 1:
                 offset = 1
@@ -345,7 +348,7 @@ def calculate_era5_climatology(era_path, save_dir, params, start, end):
                              'latitude' : (['latitude'], ds_era.latitude.values),
                              'longitude' : (['longitude'], (((ds_era.longitude.values + 180) % 360) - 180)) # transform longitude from
                             })                                                                              # [0, 360] to [-180, 180]
-        climatology_dataset.to_netcdf(f'{save_dir}/era5_{param}_climatology.nc')
+        climatology_dataset.to_netcdf(outfile)
     return
 
 ## MASKING ##
