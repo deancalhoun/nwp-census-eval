@@ -489,3 +489,16 @@ def calculate_acc(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, l
             logging.info(f'Saved ACC for {var_name} at lead time {lead_time} to {outfile}')
     logging.info('Completed ACC calculation')
     return filenames
+    
+## AGGREGATION ##
+def aggregate_to_geography(gridfile, shapefile):
+    '''
+    Aggregates gridded data to a specified geography.
+    
+    Inputs:
+    		gridfile: name of gridded data file (str)
+        shapefile: name of geography shapefile (str)
+    Outputs:
+    		filenames: list of saved aggregated data shapefiles (list of str)
+    '''
+    return
