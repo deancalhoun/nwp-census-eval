@@ -14,7 +14,7 @@ dependencies:
   - netCDF4
   - xagg
   - cartopy
-  - scikit-learn
-  - torch
-  - tensorflow
   - ecmwf-api-client
+  # - scikit-learn
+  # - torch
+  # - tensorflow
