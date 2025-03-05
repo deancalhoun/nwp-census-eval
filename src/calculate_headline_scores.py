@@ -19,9 +19,9 @@ end_era = '2020-12-31'
 start_ifs = '2024-03-01'
 start_aifs = '2024-03-01'
 end = '2024-12-31'
-ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an'
-ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc'
-aifs_fc_dir = 'glade/derecho/scratch/dcalhoun/ecmwf/aifs/fc'
+ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an/t2m'
+ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc/t2m'
+aifs_fc_dir = 'glade/derecho/scratch/dcalhoun/ecmwf/aifs/fc/t2m'
 lead_times = ['06', '12', '24']
 save_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/scores'
 
