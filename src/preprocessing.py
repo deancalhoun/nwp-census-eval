@@ -51,13 +51,12 @@ def retrieve_aifs_forecast(target_dir, start, end, params, init_times, lead_time
         for init_time in init_times:
             for lead_time in lead_times:
                 for date in dates:
+                    date_str = date.strftime("%Y-%m-%d")
                     valid_time = date + relativedelta(hours=int(init_time)) + relativedelta(hours=int(lead_time))
-                    year = valid_time.strftime("%Y")
-                    month = valid_time.strftime("%m")
-                    day = valid_time.strftime("%d")
-                    hour = valid_time.strftime("%H")
-                    date_str = valid_time.strftime("%Y-%m-%d")
-                    path = os.path.join(target_dir, param, init_time, lead_time, year, month, f'aifs_fc_{param}_{year}_{month}_{day}_{hour}z.grib')
+                    valid_year = valid_time.strftime("%Y")
+                    valid_month = valid_time.strftime("%m")
+                    valid_str = valid_time.strftime("%Y_%m_%d_%H")
+                    path = os.path.join(target_dir, param, init_time, lead_time, valid_year, valid_month, f'aifs_fc_{param}_{valid_str}z.grib')
                     if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
                         continue
                     try:
@@ -131,13 +130,12 @@ def retrieve_ifs_forecast(target_dir, start, end, grids, params, init_times, lea
             for init_time in init_times:
                 for lead_time in lead_times:
                     for date in dates:
+                        date_str = date.strftime("%Y-%m-%d")
                         valid_time = date + relativedelta(hours=int(init_time)) + relativedelta(hours=int(lead_time))
-                        year = valid_time.strftime("%Y")
-                        month = valid_time.strftime("%m")
-                        day = valid_time.strftime("%d")
-                        hour = valid_time.strftime("%H")
-                        date_str = valid_time.strftime("%Y-%m-%d")
-                        path = os.path.join(target_dir, grid, param, init_time, lead_time, year, month, f'ifs_fc_{grid}_{param}_{year}_{month}_{day}_{hour}z.grib')
+                        valid_year = valid_time.strftime("%Y")
+                        valid_month = valid_time.strftime("%m")
+                        valid_str = valid_time.strftime("%Y_%m_%d_%H")
+                        path = os.path.join(target_dir, grid, param, init_time, lead_time, valid_year, valid_month, f'ifs_fc_{grid}_{param}_{valid_str}z.grib')
                         if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
                             continue
                         try:
@@ -213,7 +211,7 @@ def retrieve_ifs_analysis(target_dir, start, end, grids, params, times, bounds):
                 date_str = date.strftime("%Y-%m-%d")
                 path = os.path.join(target_dir, grid, param, year, month, day, f'ifs_an_{grid}_{param}_{year}_{month}_{day}.grib')
                 if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
-                            continue
+                    continue
                 try:
                     server.execute({
                         'class': "od",
@@ -268,7 +266,9 @@ def retrieve_land_sea_mask(target_dir, grids, bounds):
     
     # Retrieve data
     for grid in grids:
-        path = target_dir + f"/{grid}/land_sea_mask_{grid}.grib"
+        path = os.path.join(target_dir, grid, f"land_sea_mask_{grid}.grib")
+        if os.path.exists(path[:-4]+"nc"):
+            continue # Skip already downloaded data
         server.execute({
             'class': "od",
             'type': "an",
