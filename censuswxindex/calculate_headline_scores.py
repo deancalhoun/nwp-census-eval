@@ -3,9 +3,7 @@ import xarray as xr
 import pandas as pd
 import datetime as dt
 import glob as glob
-from preprocessing import calculate_era5_climatology
-from preprocessing import calculate_rmse
-from preprocessing import calculate_acc
+import censuswxindex as cwi
 
 ## Define parameters
 # ERA
@@ -26,7 +24,7 @@ lead_times = ['06', '12', '24']
 save_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/scores'
 
 ## Calculate ERA5 climatology
-era_files = calculate_era5_climatology(
+era_files = cwi.calculate_era5_climatology(
     era_dir = era_dir,
     save_dir = era_save_dir,
     params = era_params,
@@ -36,7 +34,7 @@ era_files = calculate_era5_climatology(
 
 ## Calculate RMSE
 # IFS
-ifs_rmse_files = calculate_rmse(
+ifs_rmse_files = cwi.calculate_rmse(
     fc_dir = ifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
@@ -48,7 +46,7 @@ ifs_rmse_files = calculate_rmse(
 )
 
 # AIFS
-aifs_rmse_files = calculate_rmse(
+aifs_rmse_files = cwi.calculate_rmse(
     fc_dir = aifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
@@ -61,7 +59,7 @@ aifs_rmse_files = calculate_rmse(
 
 ## Calculate ACC
 # IFS
-ifs_acc_files = calculate_acc(
+ifs_acc_files = cwi.calculate_acc(
     fc_dir = ifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
@@ -73,7 +71,7 @@ ifs_acc_files = calculate_acc(
 )
 
 # AIFS
-aifs_acc_files = calculate_acc(
+aifs_acc_files = cwi.calculate_acc(
     fc_dir = aifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],

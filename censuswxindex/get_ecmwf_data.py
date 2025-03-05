@@ -1,4 +1,4 @@
-from preprocessing import retrieve_aifs_forecast, retrieve_ifs_forecast, retrieve_ifs_analysis, retrieve_land_sea_mask
+import censuswxindex as cwi
 
 # Define directories
 ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/fc'
@@ -18,7 +18,7 @@ grids = ['0.25', '0.125']
 bounds = ['90','-180','0','0'] # Northwest Quadrant
 
 # Retrieve data
-retrieve_ifs_forecast(
+cwi.retrieve_ifs_forecast(
     target_dir = ifs_fc_dir,
     start = start_ifs,
     end = end,
@@ -29,7 +29,7 @@ retrieve_ifs_forecast(
     bounds = bounds
 )
 
-retrieve_ifs_analysis(
+cwi.retrieve_ifs_analysis(
     target_dir = ifs_an_dir,
     start = start_ifs,
     end = end,
@@ -39,7 +39,7 @@ retrieve_ifs_analysis(
     bounds = bounds
 )
 
-retrieve_aifs_forecast(
+cwi.retrieve_aifs_forecast(
     target_dir = aifs_fc_dir,
     start = start_aifs,
     end = end,
@@ -49,7 +49,7 @@ retrieve_aifs_forecast(
     bounds = bounds
 )
 
-retrieve_land_sea_mask(
+cwi.retrieve_land_sea_mask(
     target_dir = lsm_dir,
     grids = grids,
     bounds = bounds
