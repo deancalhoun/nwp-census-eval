@@ -32,21 +32,21 @@ def retrieve_aifs_forecast(target_dir, start, end, params, init_times, lead_time
         None
     '''
     # Create subdirectories
-    dates = pd.date_range(start = start, end = end, freq = 'MS')
+    dates = pd.date_range(start=start, end=end, freq='MS')
     for param in params.keys():
         for init_time in init_times:
             for lead_time in lead_times:
                 for date in dates:
                     year = date.strftime("%Y")
                     month = date.strftime("%m")
-                    path = '/'.join([target_dir, param, init_time, lead_time, year, month])
+                    path = os.path.join(target_dir, param, init_time, lead_time, year, month)
                     os.makedirs(path, exist_ok=True)
     
     # Establish API connection to ECMWF MARS archive
     server = ECMWFService("mars")
     
     # Retrieve data
-    dates = pd.date_range(start = start, end = end, freq = 'D')
+    dates = pd.date_range(start=start, end=end, freq='D')
     for param in params.keys():
         for init_time in init_times:
             for lead_time in lead_times:
@@ -57,9 +57,7 @@ def retrieve_aifs_forecast(target_dir, start, end, params, init_times, lead_time
                     day = valid_time.strftime("%d")
                     hour = valid_time.strftime("%H")
                     date_str = valid_time.strftime("%Y-%m-%d")
-                    path = '/'.join([
-                        target_dir, param, init_time, lead_time, year, month, f'aifs_fc_{param}_{year}_{month}_{day}_{hour}z.grib'
-                    ])
+                    path = os.path.join(target_dir, param, init_time, lead_time, year, month, f'aifs_fc_{param}_{year}_{month}_{day}_{hour}z.grib')
                     if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
                         continue
                     try:
@@ -112,7 +110,7 @@ def retrieve_ifs_forecast(target_dir, start, end, grids, params, init_times, lea
         None
     '''
     # Create subdirectories
-    dates = pd.date_range(start = start, end = end, freq = 'MS')
+    dates = pd.date_range(start=start, end=end, freq='MS')
     for grid in grids:
         for param in params.keys():
             for init_time in init_times:
@@ -120,14 +118,14 @@ def retrieve_ifs_forecast(target_dir, start, end, grids, params, init_times, lea
                     for date in dates:
                         year = date.strftime("%Y")
                         month = date.strftime("%m")
-                        path = '/'.join([target_dir, grid, param, init_time, lead_time, year, month])
+                        path = os.path.join(target_dir, grid, param, init_time, lead_time, year, month)
                         os.makedirs(path, exist_ok=True)
     
     # Establish API connection to ECMWF MARS archive
     server = ECMWFService("mars")
     
     # Retrieve data
-    dates = pd.date_range(start = start, end = end, freq = 'D')
+    dates = pd.date_range(start=start, end=end, freq='D')
     for grid in grids:
         for param in params.keys():
             for init_time in init_times:
@@ -139,9 +137,7 @@ def retrieve_ifs_forecast(target_dir, start, end, grids, params, init_times, lea
                         day = valid_time.strftime("%d")
                         hour = valid_time.strftime("%H")
                         date_str = valid_time.strftime("%Y-%m-%d")
-                        path = '/'.join([
-                            target_dir, grid, param, init_time, lead_time, year, month, f'ifs_fc_{grid}_{param}_{year}_{month}_{day}_{hour}z.grib'
-                        ])
+                        path = os.path.join(target_dir, grid, param, init_time, lead_time, year, month, f'ifs_fc_{grid}_{param}_{year}_{month}_{day}_{hour}z.grib')
                         if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
                             continue
                         try:
@@ -193,21 +189,21 @@ def retrieve_ifs_analysis(target_dir, start, end, grids, params, times, bounds):
         None
     '''
     # Create subdirectories
-    dates = pd.date_range(start = start, end = end, freq = 'D')
+    dates = pd.date_range(start=start, end=end, freq='D')
     for grid in grids:
         for param in params.keys():
             for date in dates:
                 year = date.strftime("%Y")
                 month = date.strftime("%m")
                 day = date.strftime("%d")
-                path = '/'.join([target_dir, grid, param, year, month, day])
+                path = os.path.join(target_dir, grid, param, year, month, day)
                 os.makedirs(path, exist_ok=True)
 
     # Establish API connection to ECMWF MARS archive
     server = ECMWFService("mars")
      
     # Retrieve data
-    dates = pd.date_range(start = start, end = end, freq = 'D')
+    dates = pd.date_range(start=start, end=end, freq='D')
     for grid in grids:
         for param in params.keys():
             for date in dates:
@@ -215,7 +211,7 @@ def retrieve_ifs_analysis(target_dir, start, end, grids, params, times, bounds):
                 month = date.strftime("%m")
                 day = date.strftime("%d")
                 date_str = date.strftime("%Y-%m-%d")
-                path = '/'.join([target_dir, grid, param, year, month, day, f'ifs_an_{grid}_{param}_{year}_{month}_{day}.grib'])
+                path = os.path.join(target_dir, grid, param, year, month, day, f'ifs_an_{grid}_{param}_{year}_{month}_{day}.grib')
                 if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
                             continue
                 try:
@@ -264,7 +260,7 @@ def retrieve_land_sea_mask(target_dir, grids, bounds):
     '''
     # Create subdirectories
     for grid in grids:
-        path = target_dir + '/' + grid
+        path = os.path.join(target_dir, grid)
         os.makedirs(path, exist_ok=True)
 
     # Establish API connection to ECMWF MARS archive
@@ -321,7 +317,7 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
     dates = pd.date_range(start=start, end=end, freq='D')
     
     for param in params:
-        outfile = f'{save_dir}/era5_{param}_climatology_{"".join(start.split("-")[:1])}_{"".join(end.split("-")[:1])}.nc'
+        outfile = os.path.join(save_dir, f'era5_{param}_climatology_{"".join(start.split("-")[:1])}_{"".join(end.split("-")[:1])}.nc')
         filenames.append(outfile)
         if os.path.exists(outfile): # Skip already calculated climatology
             logging.info(f'Skipping already calculated {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for {param}')
@@ -337,7 +333,7 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
             
             if date.day == 1:
                 # Read in ERA files
-                path = era_dir + f'{date.strftime("%Y%m")}/*{param}*.nc'
+                path = os.path.join(era_dir, f'{date.strftime("%Y%m")}/*{param}*.nc')
                 era_file = glob.glob(path)[0]
                 ds_era = xr.open_dataset(era_file)
                 ds_era = ds_era.assign_coords(time=pd.to_datetime(ds_era.time))
@@ -405,20 +401,20 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
     logging.info('Starting RMSE calculation')
     filenames = list()
     os.makedirs(save_dir, exist_ok=True)
-    an_path = an_dir + '/*/*/*/*.nc'
+    an_path = os.path.join(an_dir, '*', '*', '*', '*.nc')
     an_files = sorted(glob.glob(an_path))
     ds_an = xr.open_mfdataset(an_files)
     ds_clim = xr.open_dataset(clim_path)
     
     for lead_time in lead_times:
-        fc_path = fc_dir + f'/*/{lead_time}/*/*/*.nc'
+        fc_path = os.path.join(fc_dir, '*', lead_time, '*', '*', '*.nc')
         fc_files = sorted(glob.glob(fc_path))
         ds_fc = xr.open_mfdataset(fc_files)
         ds_fc = ds_fc.sel(time=slice(start, end)) # restrict to dates of interest
         ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29))) # remove leap year
         var_names = list(ds_fc.keys())
         for var_name in var_names:
-            outfile = f'{save_dir}/{model_name}_{var_name}_rmse_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc'
+            outfile = os.path.join(save_dir, f'{model_name}_{var_name}_rmse_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
             filenames.append(outfile)
             common_times = np.intersect1d(ds_fc[var_name].time.values, ds_an[var_name].time.values) # ensure all times present in both fc and an
             ds_fc = ds_fc.sel(time=common_times)
@@ -460,20 +456,20 @@ def calculate_acc(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, l
     logging.info('Starting ACC calculation')
     filenames = list()
     os.makedirs(save_dir, exist_ok=True)
-    an_path = an_dir + '/*/*/*/*.nc'
+    an_path = os.path.join(an_dir, '*', '*', '*', '*.nc')
     an_files = sorted(glob.glob(an_path))
     ds_an = xr.open_mfdataset(an_files)
     ds_clim = xr.open_dataset(clim_path)
     
     for lead_time in lead_times:
-        fc_path = fc_dir + f'/*/{lead_time}/*/*/*.nc'
+        fc_path = os.path.join(fc_dir, '*', lead_time, '*', '*', '*.nc')
         fc_files = sorted(glob.glob(fc_path))
         ds_fc = xr.open_mfdataset(fc_files)
         ds_fc = ds_fc.sel(time=slice(start, end)) # restrict to dates of interest
         ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29))) # remove leap year
         var_names = list(ds_fc.keys())
         for var_name in var_names:
-            outfile = f'{save_dir}/{model_name}_{var_name}_acc_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc'
+            outfile = os.path.join(save_dir, f'{model_name}_{var_name}_acc_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
             filenames.append(outfile)
             common_times = np.intersect1d(ds_fc[var_name].time.values, ds_an[var_name].time.values) # ensure all times present in both fc and an
             ds_fc = ds_fc.sel(time=common_times)
