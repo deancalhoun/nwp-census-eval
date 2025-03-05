@@ -8,6 +8,10 @@ import xarray as xr
 import glob as glob
 from ecmwfapi import ECMWFService
 from dateutil.relativedelta import relativedelta
+import logging
+
+# Set up logging configuration
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 ### DOWNLOADING DATA ###
 
@@ -320,7 +324,9 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
         outfile = f'{save_dir}/era5_{param}_climatology_{"".join(start.split("-")[:1])}_{"".join(end.split("-")[:1])}.nc'
         filenames.append(outfile)
         if os.path.exists(outfile): # Skip already calculated climatology
+            logging.info(f'Skipping already calculated {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for {param}')
             continue
+        logging.info(f'Starting calculation of {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param}...')
         for i, date in enumerate(dates):
             if date.dayofyear == 1:
                 offset = 1
@@ -343,7 +349,11 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
             daily_avg = ds_era.sel(time=date.strftime('%Y-%m-%d'))[param].mean(dim="time", skipna=True).values
             clim[date.year - dates[0].year, date.dayofyear - offset, :, :] = daily_avg
             
+            if date.dayofyear == 365:
+                logging.info(f'Processed {date.year}')
+            
         # Save out climatology
+        logging.info(f'Saving {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param}...')
         climatology_dataset = xr.Dataset({
                              param: (['time','latitude','longitude'], np.nanmean(clim, axis=0)), # average across all years
                             },
@@ -353,6 +363,7 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
                              'longitude' : (['longitude'], (((ds_era.longitude.values + 180) % 360) - 180)) # transform longitude from
                             })                                                                              # [0, 360] to [-180, 180]
         climatology_dataset.to_netcdf(outfile)
+        logging.info(f'Saved {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param} to {outfile}')
     return filenames
 
 ## MASKING ##
