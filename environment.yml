@@ -17,10 +17,4 @@ dependencies:
   - scikit-learn
   - torch
   - tensorflow
-  - subprocess
-  - glob
-  - ecmwfapi
-  - dateutil
-  - logging
-  - warnings
-  - os
+  - ecmwf-api-client
