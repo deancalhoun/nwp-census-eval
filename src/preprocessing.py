@@ -11,7 +11,7 @@ from dateutil.relativedelta import relativedelta
 import logging
 
 # Set up logging configuration
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 ### DOWNLOADING DATA ###
 
@@ -83,8 +83,8 @@ def retrieve_aifs_forecast(target_dir, start, end, params, init_times, lead_time
                         },
                             path)
                         
-                    except Exception:
-                        print(f'Unable to retrieve AIFS forecast data for {"_".join([param, init_time, lead_time, date.strftime("%Y-%m-%d")])}')
+                    except Exception as e:
+                        logging.error(f'Unable to retrieve AIFS forecast data for {"_".join([param, init_time, lead_time, date.strftime("%Y-%m-%d")])}: {e}')
                         continue
     
                     # Convert to netcdf
@@ -165,8 +165,8 @@ def retrieve_ifs_forecast(target_dir, start, end, grids, params, init_times, lea
                             },
                                 path)
                             
-                        except Exception:
-                            print(f'Unable to retrieve forecast data for {"_".join([grid,param,init_time,lead_time,date.strftime("%Y-%m-%d")])}')
+                        except Exception as e:
+                            logging.error(f'Unable to retrieve forecast data for {"_".join([grid,param,init_time,lead_time,date.strftime("%Y-%m-%d")])}: {e}')
                             continue
         
                         # Convert to netcdf
@@ -326,7 +326,7 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
         if os.path.exists(outfile): # Skip already calculated climatology
             logging.info(f'Skipping already calculated {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for {param}')
             continue
-        logging.info(f'Starting calculation of {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param}...')
+        logging.info(f'Starting calculation of {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param}')
         for i, date in enumerate(dates):
             if date.dayofyear == 1:
                 offset = 1
@@ -350,11 +350,11 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
             daily_avg = ds_era.sel(time=date.strftime('%Y-%m-%d'))[var_name].mean(dim="time", skipna=True).values
             clim[date.year - dates[0].year, date.dayofyear - offset, :, :] = daily_avg
             
-            if date.dayofyear == 365:
-                logging.info(f'Processed {date.year}')
+            if i % (len(dates)//100) == 0:
+                logging.info(f'Processed {i} / {len(dates)} days [{i/len(dates)*100:.1f}%]')
             
         # Save out climatology
-        logging.info(f'Saving {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param}...')
+        logging.info(f'Saving {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param}')
         climatology_dataset = xr.Dataset({
                              param: (['time','latitude','longitude'], np.nanmean(clim, axis=0)), # average across all years
                             },
@@ -402,6 +402,7 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
     Outputs:
         filenames: list of saved RMSE files (list of str)
     '''
+    logging.info('Starting RMSE calculation')
     filenames = list()
     os.makedirs(save_dir, exist_ok=True)
     an_path = an_dir + '/*/*/*/*.nc'
@@ -435,10 +436,12 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
                             'longitude' : (['longitude'], ds_fc.longitude.values)
                             })                                           
             rmse_dataset.to_netcdf(outfile)
+            logging.info(f'Saved RMSE for {var_name} at lead time {lead_time} to {outfile}')
+    logging.info('Completed RMSE calculation')
     return filenames
 
 ## ACC ##
-def calculate_acc(fc_dir, an_path, c_path, save_dir, lead_times, model):
+def calculate_acc(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, lead_times):
     '''
     Calculates the anomaly correlation coefficient between forecast and analysis data for a given model and lead times over the specified date range
 
@@ -454,6 +457,7 @@ def calculate_acc(fc_dir, an_path, c_path, save_dir, lead_times, model):
     Outputs:
         filenames: list of saved ACC files (list of str)
     '''
+    logging.info('Starting ACC calculation')
     filenames = list()
     os.makedirs(save_dir, exist_ok=True)
     an_path = an_dir + '/*/*/*/*.nc'
@@ -486,4 +490,6 @@ def calculate_acc(fc_dir, an_path, c_path, save_dir, lead_times, model):
                             'longitude' : (['longitude'], ds_fc.longitude.values)
                             })                                           
             acc_dataset.to_netcdf(outfile)
+            logging.info(f'Saved ACC for {var_name} at lead time {lead_time} to {outfile}')
+    logging.info('Completed ACC calculation')
     return filenames
