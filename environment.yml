@@ -1,18 +1,26 @@
-name: ae_fc_error
+name: censuswxindex
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.13.2
+  - ipykernel
   - numpy
   - scipy
-  - matplotlib
-  - xarray
-  - netcdf4
   - pandas
-  - scikit-learn
-  - distributed
-  - pyproj
-  - jupyter
-  - jupyterlab
+  - geopandas
+  - matplotlib
+  - seaborn
+  - xarray
+  - netCDF4
+  - xagg
   - cartopy
+  - scikit-learn
+  - torch
   - tensorflow
+  - subprocess
+  - glob
+  - ecmwfapi
+  - dateutil
+  - logging
+  - warnings
+  - os
