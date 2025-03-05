@@ -343,10 +343,11 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
                 ds_era = ds_era.assign_coords(time=pd.to_datetime(ds_era.time))
     
                 if i == 0:
-                    clim = np.zeros((len(np.unique(dates.year)), 365, ds_era[param].shape[1], ds_era[param].shape[2])) # [year, doy, lat, lon]
+                    var_name = list(ds_era.keys())[0]
+                    clim = np.zeros((len(np.unique(dates.year)), 365, ds_era[var_name].shape[1], ds_era[var_name].shape[2])) # [year, doy, lat, lon]
     
             # Calculate climatology
-            daily_avg = ds_era.sel(time=date.strftime('%Y-%m-%d'))[param].mean(dim="time", skipna=True).values
+            daily_avg = ds_era.sel(time=date.strftime('%Y-%m-%d'))[var_name].mean(dim="time", skipna=True).values
             clim[date.year - dates[0].year, date.dayofyear - offset, :, :] = daily_avg
             
             if date.dayofyear == 365:
