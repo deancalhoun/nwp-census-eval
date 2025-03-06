@@ -2,13 +2,13 @@ import os
 import logging
 import warnings
 import subprocess
+import xagg
 import glob as glob
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 import xarray as xr
 import netCDF4 as nc
-import xagg as xa
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from ecmwfapi import ECMWFService
@@ -495,14 +495,24 @@ def calculate_acc(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, l
     return filenames
     
 ## AGGREGATION ##
-def aggregate_to_geography(gridfile, shapefile):
+def aggregate_to_geography(ds, gdf, outfile, bounds=None):
     '''
     Aggregates gridded data to a specified geography.
     
     Inputs:
-    		gridfile: name of gridded data file (str)
-        shapefile: name of geography shapefile (str)
+    	ds: gridded data (xarray dataset)
+        gdf: geography to aggregate to (geopandas geodataframe)
+        outfile: path to save aggregated data (str)
+        bounds: latitude and longitude boundaries [deg N, deg W, deg S, deg E] (list of int)
     Outputs:
-    		filenames: list of saved aggregated data shapefiles (list of str)
+    	None
     '''
+    logging.info('Starting aggregation')
+    if bounds is not None:
+        gdf = gdf.cx[bounds[1]:bounds[3], bounds[0]:bounds[2]]
+    weightmap = xagg.pixel_overlaps(ds,gdf)
+    aggregated = xagg.aggregate(ds,weightmap)
+    with warnings.catch_warnings(action="ignore"):
+        aggregated.to_shp(outfile)
+    logging.info('Completed aggregation')
     return
