@@ -418,7 +418,7 @@ def calculate_rmse(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, 
         ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29))) # remove leap year
         var_names = list(ds_fc.keys())
         for var_name in var_names:
-            outfile = os.path.join(save_dir, f'{model_name}_{var_name}_rmse_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
+            outfile = os.path.join(save_dir, 'rmse', model_name, var_name, lead_time, f'rmse_{model_name}_{var_name}_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
             filenames.append(outfile)
             common_times = np.intersect1d(ds_fc[var_name].time.values, ds_an[var_name].time.values) # ensure all times present in both fc and an
             ds_fc = ds_fc.sel(time=common_times)
@@ -473,7 +473,7 @@ def calculate_acc(fc_dir, an_dir, clim_path, save_dir, model_name, start, end, l
         ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29))) # remove leap year
         var_names = list(ds_fc.keys())
         for var_name in var_names:
-            outfile = os.path.join(save_dir, f'{model_name}_{var_name}_acc_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
+            outfile = os.path.join(save_dir, 'acc', model_name, var_name, lead_time, f'acc_{model_name}_{var_name}_{lead_time}_{"".join(start.split("-"))}_{"".join(end.split("-"))}.nc')
             filenames.append(outfile)
             common_times = np.intersect1d(ds_fc[var_name].time.values, ds_an[var_name].time.values) # ensure all times present in both fc and an
             ds_fc = ds_fc.sel(time=common_times)
