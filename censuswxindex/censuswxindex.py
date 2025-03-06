@@ -516,3 +516,17 @@ def aggregate_to_geography(ds, gdf, outfile, bounds=None):
         aggregated.to_shp(outfile)
     logging.info('Completed aggregation')
     return
+
+### VISUALIZATION ###
+def make_comparison_plot(ds, gdf, outfile):
+    '''
+    Generates a comparison plot of gridded and aggregated data
+
+    Inputs:
+        ds: gridded data (xarray dataset)
+        gdf: aggregated data (geopandas geodataframe)
+        outfile: path to save plot (str)
+    Outputs:
+        None
+    '''
+    return
