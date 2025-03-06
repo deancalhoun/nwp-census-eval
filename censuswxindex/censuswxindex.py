@@ -88,8 +88,8 @@ def retrieve_aifs_forecast(target_dir, start, end, params, init_times, lead_time
                         logging.error(f'Unable to retrieve AIFS forecast data for {"_".join([param, init_time, lead_time, date.strftime("%Y-%m-%d")])}: {e}')
                         continue
     
-                    # Convert to netcdf
-                    subprocess.run(f'module load eccodes && grib_to_netcdf -o {path[:-4]+"nc"} {path}', shell=True)
+                    # Convert to netcdf using eccodes (module load ecccodes)
+                    subprocess.run(f'grib_to_netcdf -o {path[:-4]+"nc"} {path}', shell=True)
                 
                     # Delete grib file
                     subprocess.run(['rm', path])
@@ -167,8 +167,8 @@ def retrieve_ifs_forecast(target_dir, start, end, grids, params, init_times, lea
                             logging.error(f'Unable to retrieve forecast data for {"_".join([grid,param,init_time,lead_time,date.strftime("%Y-%m-%d")])}: {e}')
                             continue
         
-                        # Convert to netcdf
-                        subprocess.run(f'module load eccodes && grib_to_netcdf -o {path[:-4]+"nc"} {path}', shell=True)
+                        # Convert to netcdf using eccodes (module load ecccodes)
+                        subprocess.run(f'grib_to_netcdf -o {path[:-4]+"nc"} {path}', shell=True)
                     
                         # Delete grib file
                         subprocess.run(['rm', path])
@@ -241,8 +241,8 @@ def retrieve_ifs_analysis(target_dir, start, end, grids, params, times, bounds):
                         print(f'Unable to retrieve analysis data for {date_str}')
                         continue
 
-            # Convert to netcdf
-            subprocess.run(f'module load eccodes && grib_to_netcdf -o {path[:-4]+"nc"} {path}', shell=True)
+            # Convert to netcdf using eccodes (module load ecccodes)
+            subprocess.run(f'grib_to_netcdf -o {path[:-4]+"nc"} {path}', shell=True)
         
             # Delete grib file
             subprocess.run(['rm', path])
@@ -293,8 +293,8 @@ def retrieve_land_sea_mask(target_dir, grids, bounds):
         },
             path)
         
-        # Convert to netcdf
-        subprocess.run(f'module load eccodes && grib_to_netcdf -o {path[:-4]+"nc"} {path}', shell=True)
+        # Convert to netcdf using eccodes (module load ecccodes)
+        subprocess.run(f'grib_to_netcdf -o {path[:-4]+"nc"} {path}', shell=True)
     
         # Delete grib file
         subprocess.run(['rm', path])
