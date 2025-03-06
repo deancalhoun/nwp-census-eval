@@ -3,6 +3,11 @@ import xarray as xr
 import pandas as pd
 import datetime as dt
 import glob as glob
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import censuswxindex as cwi
 
 ## Define parameters
@@ -38,7 +43,7 @@ ifs_rmse_files = cwi.calculate_rmse(
     fc_dir = ifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
-    save_dir = save_dir+'/ifs/rmse',
+    save_dir = os.path.join(save_dir, 'ifs', 'rmse'),
     model_name = 'ifs',
     start = start_ifs,
     end = end,
@@ -50,7 +55,7 @@ aifs_rmse_files = cwi.calculate_rmse(
     fc_dir = aifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
-    save_dir = save_dir+'/aifs/rmse',
+    save_dir = os.path.join(save_dir, 'aifs', 'rmse'),
     model_name = 'aifs',
     start = start_aifs,
     end = end,
@@ -63,7 +68,7 @@ ifs_acc_files = cwi.calculate_acc(
     fc_dir = ifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
-    save_dir = save_dir+'/ifs/acc',
+    save_dir = os.path.join(save_dir, 'ifs', 'acc'),
     model_name = 'ifs',
     start = start_ifs,
     end = end,
@@ -75,7 +80,7 @@ aifs_acc_files = cwi.calculate_acc(
     fc_dir = aifs_fc_dir,
     an_dir = ifs_an_dir,
     clim_path = era_files[0],
-    save_dir = save_dir+'/aifs/acc',
+    save_dir = os.path.join(save_dir, 'aifs', 'acc'),
     model_name = 'aifs',
     start = start_aifs,
     end = end,
