@@ -25,7 +25,7 @@ end = '2024-12-31'
 ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an/t2m'
 ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc/t2m'
 aifs_fc_dir = 'glade/derecho/scratch/dcalhoun/ecmwf/aifs/fc/t2m'
-lead_times = ['06', '12', '24']
+lead_times = ['00', '06', '12', '24', '48', '72', '96', '120', '168', '240'] 
 save_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/scores'
 
 ## Calculate ERA5 climatology
