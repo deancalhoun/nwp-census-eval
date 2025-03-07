@@ -6,9 +6,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import censuswxindex as cwi
 
 # Define directories
-ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/fc'
-ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/an'
-aifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_aifs/fc'
+ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc'
+ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an'
+aifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/aifs/fc'
 lsm_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/land_sea_mask'
 
 # Define parameters
