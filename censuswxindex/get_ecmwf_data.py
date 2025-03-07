@@ -20,7 +20,8 @@ init_times = ['00', '12']
 lead_times = ['00', '06', '12', '18', '24', '48', '72', '96', '120', '168', '240']
 valid_times = ['00', '06', '12', '18']
 grids = ['0.125']
-bounds = ['90','-180','0','0'] # Northwest Quadrant
+bounds = ['45', '-85', '35', '-70']
+# bounds = ['90','-180','0','0'] # Northwest Quadrant
 
 # Retrieve data
 cwi.retrieve_ifs_forecast(
