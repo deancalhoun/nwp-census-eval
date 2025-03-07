@@ -60,7 +60,7 @@ def retrieve_aifs_forecast(target_dir, start, end, params, init_times, lead_time
                     valid_year = valid_time.strftime("%Y")
                     valid_month = valid_time.strftime("%m")
                     valid_str = valid_time.strftime("%Y_%m_%d_%H")
-                    path = os.path.join(target_dir, param, init_time, lead_time, valid_year, valid_month, f'aifs_fc_{param}_{valid_str}z.grib')
+                    path = os.path.join(target_dir, '0.25', param, init_time, lead_time, valid_year, valid_month, f'aifs_fc_{param}_{valid_str}z.grib')
                     if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
                         continue
                     try:
