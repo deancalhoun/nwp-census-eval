@@ -62,6 +62,7 @@ def retrieve_aifs_forecast(target_dir, start, end, params, init_times, lead_time
                     valid_str = valid_time.strftime("%Y_%m_%d_%H")
                     path = os.path.join(target_dir, '0.25', param, init_time, lead_time, valid_year, valid_month, f'aifs_fc_{param}_{valid_str}z.grib')
                     if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
+                        logging.info(f'Skipping already downloaded data {path[:-4]+"nc"}')
                         continue
                     try:
                         server.execute({
@@ -141,6 +142,7 @@ def retrieve_ifs_forecast(target_dir, start, end, grids, params, init_times, lea
                         valid_str = valid_time.strftime("%Y_%m_%d_%H")
                         path = os.path.join(target_dir, grid, param, init_time, lead_time, valid_year, valid_month, f'ifs_fc_{param}_{valid_str}z.grib')
                         if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
+                            logging.info(f'Skipping already downloaded data {path[:-4]+"nc"}')
                             continue
                         try:
                             server.execute({
@@ -215,6 +217,7 @@ def retrieve_ifs_analysis(target_dir, start, end, grids, params, times, bounds):
                 date_str = date.strftime("%Y-%m-%d")
                 path = os.path.join(target_dir, grid, param, year, month, day, f'ifs_an_{param}_{year}_{month}_{day}.grib')
                 if os.path.exists(path[:-4]+"nc"): # Skip already downloaded data
+                    logging.info(f'Skipping already downloaded data {path[:-4]+"nc"}')
                     continue
                 try:
                     server.execute({
