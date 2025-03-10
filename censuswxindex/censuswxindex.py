@@ -1,5 +1,6 @@
 import os
 import logging
+import gc
 import warnings
 import subprocess
 import xagg
@@ -323,6 +324,7 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
     os.makedirs(save_dir, exist_ok=True)
     dates = pd.date_range(start=start, end=end, freq='D')
     
+    clim = None
     for param in params:
         outfile = os.path.join(save_dir, f'era5_{param}_climatology_{"".join(start.split("-")[:1])}_{"".join(end.split("-")[:1])}.nc')
         filenames.append(outfile)
@@ -330,7 +332,7 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
             logging.info(f'Skipping already calculated {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for {param}')
             continue
         logging.info(f'Starting calculation of {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param}')
-        for i, date in enumerate(dates):
+        for date in dates:
             if date.dayofyear == 1:
                 offset = 1
             
@@ -345,14 +347,14 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
                 ds_era = xr.open_dataset(era_file)
                 ds_era = ds_era.assign_coords(time=pd.to_datetime(ds_era.time))
     
-                if i == 0:
-                    var_name = list(ds_era.keys())[0]
-                    clim = np.zeros((len(np.unique(dates.year)), 365, ds_era[var_name].shape[1], ds_era[var_name].shape[2])) # [year, doy, lat, lon]
+            if clim is None:
+                var_name = list(ds_era.keys())[0]
+                clim = np.zeros((len(np.unique(dates.year)), 365, ds_era[var_name].shape[1], ds_era[var_name].shape[2])) # [year, doy, lat, lon]
     
             # Calculate climatology
-            daily_avg = ds_era.sel(time=date.strftime('%Y-%m-%d'))[var_name].mean(dim="time", skipna=True).values
-            clim[date.year - dates[0].year, date.dayofyear - offset, :, :] = daily_avg
-            
+            clim[date.year - dates[0].year, date.dayofyear - offset, :, :] = ds_era.sel(time=date.strftime('%Y-%m-%d'))[var_name].mean(dim="time", skipna=True).values # daily average
+            ds_era.close()
+
             if i % (len(dates)//100) == 0:
                 logging.info(f'Processed {i} / {len(dates)} days [{i/len(dates)*100:.1f}%]')
             
@@ -364,8 +366,10 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
                              coords =
                             {'time': (['time'], np.arange(1,365 + 1,1)),
                              'latitude' : (['latitude'], ds_era.latitude.values),
-                             'longitude' : (['longitude'], (((ds_era.longitude.values + 180) % 360) - 180)) # transform longitude from
-                            })                                                                              # [0, 360] to [-180, 180]
+                             'longitude' : (['longitude'], (((ds_era.longitude.values + 180) % 360) - 180)) # transform longitude from [0, 360] to [-180, 180]
+                            })
+        del clim
+        gc.collect()                                                                  
         climatology_dataset.to_netcdf(outfile)
         logging.info(f'Saved {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param} to {outfile}')
     return filenames
