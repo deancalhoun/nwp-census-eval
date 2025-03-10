@@ -41,7 +41,7 @@ cwi.retrieve_ifs_analysis(
     end = end,
     grids = grids,
     params = params,
-    times = times,
+    times = valid_times,
     bounds = bounds
 )
 
