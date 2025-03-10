@@ -332,7 +332,7 @@ def calculate_era5_climatology(era_dir, save_dir, params, start, end):
             logging.info(f'Skipping already calculated {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for {param}')
             continue
         logging.info(f'Starting calculation of {dates[0].strftime("%Y")}-{dates[-1].strftime("%Y")} climatology for parameter: {param}')
-        for date in dates:
+        for i, date in enumerate(dates):
             if date.dayofyear == 1:
                 offset = 1
             
