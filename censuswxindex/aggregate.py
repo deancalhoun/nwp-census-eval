@@ -44,6 +44,10 @@ for year in years:
         common_times = np.intersect1d(ds_fc['t2m'].time.values, ds_an['t2m'].time.values)
         ds_fc = ds_fc.sel(time=common_times)
         ds_an = ds_an.sel(time=common_times)
+
+        # Remove leap day
+        ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29)))
+        ds_an = ds_an.sel(time=~((ds_an.time.dt.month == 2) & (ds_an.time.dt.day == 29)))
         
         # Interpolate the climatology to the same grid as the forecast and analysis
         ds_clim = ds_clim.sel(
