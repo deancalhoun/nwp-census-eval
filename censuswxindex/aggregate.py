@@ -83,5 +83,6 @@ for year in years:
             cols = df.columns.tolist()
             df = df[cols[0:1] + cols[-1:] + cols[1:-1]] # Reorder columns
             df.to_csv(filename) # Save aggregated data
+            print(f'Saved {filename}')
         
-        print(f'Saved aggregation for {year} {month}')
+        print(f'Finished aggregation for {year} {month} \n')
