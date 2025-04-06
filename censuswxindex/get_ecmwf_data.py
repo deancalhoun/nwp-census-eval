@@ -5,58 +5,42 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import censuswxindex as cwi
 
-# Define directories
+# Define directory
 ifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc'
 ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an'
-aifs_fc_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/aifs/fc'
-lsm_dir = '/glade/derecho/scratch/dcalhoun/ecmwf_ifs/land_sea_mask'
 
 # Define parameters
-start_ifs = '2016-01-01'
-start_aifs = '2024-03-01'
+start = '2016-01-01'
 end = '2024-12-31'
-params = {'t2m': '167.128'}
-init_times = ['00', '12']
-lead_times = ['00', '06', '12', '18', '24', '48', '72', '96', '120', '168', '240']
-valid_times = ['00', '06', '12', '18']
-grids = ['0.125']
-bounds = ['45', '-85', '35', '-70']
-# bounds = ['90','-180','0','0'] # Northwest Quadrant
+param = ('2t', '167.128')
+init_times = ['0000', '1200']
+lead_times = ['0', '6', '12', '18', '24', '48', '72', '96', '120', '168', '240']
+valid_times = ['0000', '0600', '1200', '1800']
+bounds = ['49.5','-125','24.5','-66.5'] # CONUS
+grid = '0.125'
+fc_filter_file = '/glade/u/home/dcalhoun/CensusWxIndex/censuswxindex/split_fc.txt'
+an_filter_file = '/glade/u/home/dcalhoun/CensusWxIndex/censuswxindex/split_an.txt'
 
 # Retrieve data
 cwi.retrieve_ifs_forecast(
     target_dir = ifs_fc_dir,
-    start = start_ifs,
+    start = start,
     end = end,
-    grids = grids,
-    params = params,
+    param = param,
     init_times = init_times,
     lead_times = lead_times,
-    bounds = bounds
+    bounds = bounds,
+    grid = grid,
+    filter_file = fc_filter_file
 )
 
 cwi.retrieve_ifs_analysis(
     target_dir = ifs_an_dir,
-    start = start_ifs,
+    start = start,
     end = end,
-    grids = grids,
-    params = params,
-    times = valid_times,
-    bounds = bounds
-)
-
-cwi.retrieve_aifs_forecast(
-    target_dir = aifs_fc_dir,
-    start = start_aifs,
-    end = end,
-    params = params,
-    init_times = init_times,
-    lead_times = lead_times,
-    bounds = bounds
-)
-
-cwi.retrieve_land_sea_mask(
-    target_dir = lsm_dir,
-    grids = grids,
-    bounds = bounds
+    param = param,
+    valid_times = valid_times,
+    bounds = bounds,
+    grid = grid,
+    filter_file = an_filter_file
 )
