@@ -46,6 +46,11 @@ def retrieve_ifs_forecast(target_dir, start, end, param, init_times, lead_times,
     tempfile = os.path.join(target_dir, grid, param[0], f'ifs_fc_temp.grib')
     dates = pd.date_range(start=start, end=end, freq='D')
     for date in dates:
+        paths = [path for init_time in init_times for lead_time in lead_times for path in glob.glob(os.path.join(*[target_dir, grid, param[0], init_time, lead_time, f'*{date.strftime("%Y%m%d")}*']))]
+        if paths and all(os.path.exists(path) for path in paths):
+            # Skip already downloaded files
+            logging.info(f'Skipping already downloaded forecast data for {date.strftime("%Y-%m-%d")}')
+            continue
         try:
             server.execute(
                 {
@@ -108,6 +113,11 @@ def retrieve_ifs_analysis(target_dir, start, end, param, valid_times, bounds, gr
     tempfile = os.path.join(target_dir, grid, param[0], f'ifs_an_temp.grib')
     dates = pd.date_range(start=start, end=end, freq='D')
     for date in dates:
+        path = glob.glob(os.path.join(target_dir, grid, param[0], f'*{date.strftime("%Y%m%d")}*'))
+        if os.path.exists(path):
+            # Skip already downloaded files
+            logging.info(f'Skipping already downloaded analysis data for {date.strftime("%Y-%m-%d")}')
+            continue
         try:
             server.execute(
                 {
