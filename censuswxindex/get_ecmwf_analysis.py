@@ -16,7 +16,7 @@ args = parser.parse_args()
 ifs_an_dir = '/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an'
 
 # Define parameters
-start = f'{args.years}-01-01'
+start = f'{args.year}-01-01'
 end = f'{args.year}-12-31'
 param = ('2t', '167.128')
 valid_times = ['0000', '0600', '1200', '1800']

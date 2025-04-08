@@ -113,8 +113,8 @@ def retrieve_ifs_analysis(target_dir, start, end, param, valid_times, bounds, gr
     tempfile = os.path.join(target_dir, grid, param[0], f'ifs_an_temp.grib')
     dates = pd.date_range(start=start, end=end, freq='D')
     for date in dates:
-        path = glob.glob(os.path.join(target_dir, grid, param[0], f'*{date.strftime("%Y%m%d")}*'))
-        if os.path.exists(path):
+        paths = glob.glob(os.path.join(target_dir, grid, param[0], f'*{date.strftime("%Y%m%d")}*'))
+        if paths and all(os.path.exists(p) for p in paths):
             # Skip already downloaded files
             logging.info(f'Skipping already downloaded analysis data for {date.strftime("%Y-%m-%d")}')
             continue

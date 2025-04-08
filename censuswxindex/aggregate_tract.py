@@ -4,6 +4,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import glob
+import cfgrib
 import os
 
 # ## Aggregating IFS 2m Temperature Forecast Absolute Error with Maryland Counties
@@ -24,29 +25,29 @@ for year in years:
     for month in months:
         print(f'Starting aggregation for {year} {month}')
         
-        fc_path = f'/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc/0.125/t2m/00/24/{year}/{month}/*.nc'
-        an_path = f'/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an/0.125/t2m/{year}/{month}/*/*.nc'
+        fc_path = f'/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc/0.125/2t/0000/24/*{year}{month}*.grib'
+        an_path = f'/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an/0.125/2t/*{year}{month}*.grib'
         clim_path = '/glade/derecho/scratch/dcalhoun/ecmwf/era5/era5_2t_climatology_1991_2020_sorted.nc'
 
         ## Read in forecast, analysis, and climatology data and compute anomalies
         # Forecast
         fc_files = sorted(glob.glob(fc_path))
-        ds_fc = xr.open_mfdataset(fc_files)
+        ds_fc = xr.open_mfdataset(fc_files, engine='cfgrib')
         
         # Analysis
         an_files = sorted(glob.glob(an_path))
-        ds_an = xr.open_mfdataset(an_files)
+        ds_an = xr.open_mfdataset(an_files, engine='cfgrib')
         
         # Climatology
         ds_clim = xr.open_dataset(clim_path)
         
         # Ensure all times present in both fc and an
-        common_times = np.intersect1d(ds_fc['t2m'].time.values, ds_an['t2m'].time.values)
-        ds_fc = ds_fc.sel(time=common_times)
+        common_times = np.intersect1d(ds_fc['t2m'].valid_time.values, ds_an['t2m'].time.values)
+        ds_fc = ds_fc.sel(time=common_times) # PROBLEMATIC HERE (VALID TIME)
         ds_an = ds_an.sel(time=common_times)
 
         # Remove leap day
-        ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29)))
+        ds_fc = ds_fc.sel(time=~((ds_fc.time.dt.month == 2) & (ds_fc.time.dt.day == 29))) # VALID TIME, PROBLEMATIC
         ds_an = ds_an.sel(time=~((ds_an.time.dt.month == 2) & (ds_an.time.dt.day == 29)))
         
         # Interpolate the climatology to the same grid as the forecast and analysis
@@ -57,7 +58,7 @@ for year in years:
         ds_clim = ds_clim.interp(latitude = ds_fc.latitude.values, longitude = ds_fc.longitude.values, method='nearest')
         
         # Calculate anomalies
-        ds_clim = ds_clim.sel(time=pd.to_datetime(ds_fc.time.dt.strftime('2017-%m-%d')).dayofyear) # align climatology to forecast data
+        ds_clim = ds_clim.sel(time=pd.to_datetime(ds_fc.valid_time.dt.strftime('2017-%m-%d')).dayofyear) # align climatology to forecast data
         ds_fc['t2m'] = (['time', 'latitude', 'longitude'], ds_fc['t2m'].values - ds_clim['2t'].values)
         ds_an['t2m'] = (['time', 'latitude', 'longitude'], ds_an['t2m'].values - ds_clim['2t'].values)
         
