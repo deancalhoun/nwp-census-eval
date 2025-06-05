@@ -1,0 +1,1 @@
+write "/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc/0.125/[shortName]/[time]/[step]/ifs_fc_[shortName]_[time]_[step]_[date].grib";
