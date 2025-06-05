@@ -1,1 +1,0 @@
-write "/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an/0.125/[shortName]/ifs_an_[shortName]_[date].grib";
