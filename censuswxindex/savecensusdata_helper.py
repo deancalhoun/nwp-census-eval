@@ -58,14 +58,12 @@ def create_helper_file():
         "55": 'Wisconsin',
         "56": 'Wyoming'
     }
-    geocodes = pd.read_csv('all-geocodes-v2025.csv', skiprows=4) # Read in geocode info from US Census Bureau
-                                                                 # https://www.census.gov/geographies/reference-files/2020/demo/popest/2020-fips.html
-                                                                 # Note: manually updated Connecticut to reflect county changes since 2020
-    geocodes = geocodes[geocodes["Summary Level"] == 50]
+    geocodes = pd.read_csv('all-geocodes-v2023.csv', skiprows=4) # Read in geocode info from US Census Bureau
+    geocodes = geocodes[geocodes["Summary Level"] == 50] # County level
     state_county_fips = geocodes[["State Code (FIPS)", "County Code (FIPS)"]]
     state_county_fips = state_county_fips.rename(columns={"State Code (FIPS)": "State FIPS Code", "County Code (FIPS)": "County FIPS Code"})
-    state_county_fips = state_county_fips[state_county_fips["County FIPS Code"]!=0].reset_index(drop=True)
-    state_county_fips = state_county_fips[state_county_fips["State FIPS Code"]<72].reset_index(drop=True)
+    state_county_fips = state_county_fips[state_county_fips["County FIPS Code"]!=0].reset_index(drop=True) # Remove null entries
+    state_county_fips = state_county_fips[state_county_fips["State FIPS Code"]<72].reset_index(drop=True) # Remove territories
     state_county_fips["State FIPS Code"] = [f"{i:02}" for i in state_county_fips['State FIPS Code']]
     state_county_fips["County FIPS Code"] = [f"{i:03}" for i in state_county_fips['County FIPS Code']]
     state_county_fips["State Name"] = [fips_state_names[i] for i in state_county_fips["State FIPS Code"].values]

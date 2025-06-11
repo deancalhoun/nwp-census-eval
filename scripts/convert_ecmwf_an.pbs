@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N convert_an
+#PBS -A UMCP0038
+#PBS -j oe
+#PBS -o convert_an.log
+#PBS -k eod
+#PBS -q main
+#PBS -l walltime=02:00:00
+#PBS -l select=1:ncpus=1:mem=4GB
+
+# Load necessary modules
+module purge
+module load eccodes
+
+# Add eccodes binary path to PATH
+export PATH=$PATH:/glade/u/apps/derecho/24.12/spack/opt/spack/eccodes/2.34.0/oneapi/2024.2.1/m3t3/bin
+
+# Change to the directory from which the job was submitted
+cd $PBS_O_WORKDIR
+
+# Run script
+./sort_ecmwf.sh
+./convert_ecmwf_an.sh
