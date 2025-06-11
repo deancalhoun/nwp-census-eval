@@ -25,8 +25,8 @@ for year in years:
     for month in months:
         print(f'Starting aggregation for {year} {month}')
         
-        fc_path = f'/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc/0.125/2t/0000/24/*{year}{month}*.grib'
-        an_path = f'/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an/0.125/2t/*{year}{month}*.grib'
+        fc_path = f'/glade/derecho/scratch/dcalhoun/ecmwf/ifs/fc/0.125/2t/0000/24/*{year}{month}*.nc'
+        an_path = f'/glade/derecho/scratch/dcalhoun/ecmwf/ifs/an/0.125/2t/*{year}{month}*.nc'
         clim_path = '/glade/derecho/scratch/dcalhoun/ecmwf/era5/era5_2t_climatology_1991_2020_sorted.nc'
 
         ## Read in forecast, analysis, and climatology data and compute anomalies
