@@ -15,6 +15,7 @@ dependencies:
   - xagg
   - cartopy
   - ecmwf-api-client
+  - openpyxl
   # - scikit-learn
   # - torch
   # - tensorflow
