@@ -3,18 +3,17 @@ import pandas as pd
 import os
 import logging
 
-logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-def retrieve_census_data(target_dir, table_list, level='tract', base_url='https://api.census.gov/data/2023/acs/acs5'):
+def retrieve_census_data(target_dir, table_list, level, base_url):
     '''
     Downloads census data from the U.S. Census Bureau API.
 
     Inputs:
         target_dir: parent directory to save data within (str)
         table_list: list of census table codes to download (list of str)
-        level: geographic level of data to download (str, default='tract')
-        base_url: base URL for the Census API (str, default='https://api.census.gov/data/2023/acs/acs5'
-            for American Community Survey 5 year estimates released in 2023)
+        level: geographic level of data to download (str)
+        base_url: base URL for the Census API (str)
     Outputs:
         None
     '''
@@ -93,6 +92,7 @@ def retrieve_census_data(target_dir, table_list, level='tract', base_url='https:
         for table in table_list:
             outfile = os.path.join(save_dir, f'acs_5yr_2023_{level}_{state_name}_{table}.csv')
             if os.path.exists(outfile):
+                logging.info(f'Skipping already downloaded data for {state_name}, table {table}')
                 continue
             params = {
                 'get': f'group({table})',
