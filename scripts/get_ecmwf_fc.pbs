@@ -1,8 +1,8 @@
 #!/bin/bash
-#PBS -N get_ecmwf_an
+#PBS -N get_fc
 #PBS -A UMCP0038
 #PBS -j oe
-#PBS -o data_retrieval.log
+#PBS -o get_fc.log
 #PBS -k eod
 #PBS -q main
 #PBS -l walltime=02:00:00
@@ -23,4 +23,4 @@ conda activate censuswxindex
 cd $PBS_O_WORKDIR
 
 # Run Python script
-python -u /glade/u/home/dcalhoun/CensusWxIndex/censuswxindex/get_ecmwf_analysis.py --year $YEAR
+python -u /glade/u/home/dcalhoun/CensusWxIndex/censuswxindex/get_ecmwf_fc.py --year $YEAR

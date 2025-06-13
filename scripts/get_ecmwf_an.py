@@ -20,7 +20,7 @@ param = ('2t', '167.128')
 valid_times = ['0000', '0600', '1200', '1800']
 bounds = ['49.5','-125','24.5','-66.5'] # CONUS
 grid = '0.125'
-an_filter_file = '/glade/u/home/dcalhoun/CensusWxIndex/censuswxindex/split_an.txt'
+an_filter_file = '/glade/u/home/dcalhoun/CensusWxIndex/scripts/split_an.txt'
 
 retrieve_ifs_analysis(
     target_dir = ifs_an_dir,

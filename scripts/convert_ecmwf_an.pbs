@@ -19,5 +19,4 @@ export PATH=$PATH:/glade/u/apps/derecho/24.12/spack/opt/spack/eccodes/2.34.0/one
 cd $PBS_O_WORKDIR
 
 # Run script
-./sort_ecmwf.sh
 ./convert_ecmwf_an.sh

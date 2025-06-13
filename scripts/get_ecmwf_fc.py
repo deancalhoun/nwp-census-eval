@@ -21,7 +21,7 @@ init_times = ['0000', '1200']
 lead_times = ['0', '6', '12', '18', '24', '48', '72', '96', '120', '168', '240']
 bounds = ['49.5','-125','24.5','-66.5'] # CONUS
 grid = '0.125'
-fc_filter_file = '/glade/u/home/dcalhoun/CensusWxIndex/censuswxindex/split_fc.txt'
+fc_filter_file = '/glade/u/home/dcalhoun/CensusWxIndex/scripts/split_fc.txt'
 
 # Retrieve data
 retrieve_ifs_forecast(
