@@ -1,10 +1,8 @@
 import os
 import sys
 import argparse
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import censuswxindex as cwi
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from censuswxindex.data.ecmwf import retrieve_ifs_analysis
 
 parser = argparse.ArgumentParser(description='Process data for a specific year.')
 parser.add_argument('--year', type=int, required=True, help='The year to process data for')
@@ -24,7 +22,7 @@ bounds = ['49.5','-125','24.5','-66.5'] # CONUS
 grid = '0.125'
 an_filter_file = '/glade/u/home/dcalhoun/CensusWxIndex/censuswxindex/split_an.txt'
 
-cwi.retrieve_ifs_analysis(
+retrieve_ifs_analysis(
     target_dir = ifs_an_dir,
     start = start,
     end = end,

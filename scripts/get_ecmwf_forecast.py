@@ -1,10 +1,8 @@
 import os
 import sys
 import argparse
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import censuswxindex as cwi
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from censuswxindex.data.ecmwf import retrieve_ifs_forecast
 
 parser = argparse.ArgumentParser(description='Process data for a specific year.')
 parser.add_argument('--year', type=int, required=True, help='The year to process data for')
@@ -26,7 +24,7 @@ grid = '0.125'
 fc_filter_file = '/glade/u/home/dcalhoun/CensusWxIndex/censuswxindex/split_fc.txt'
 
 # Retrieve data
-cwi.retrieve_ifs_forecast(
+retrieve_ifs_forecast(
     target_dir = ifs_fc_dir,
     start = start,
     end = end,
