@@ -14,3 +14,8 @@ def calculate_absolute_error(fc_dir, an_dir, clim_path, save_dir, start, end, le
         None
     '''
     return
+
+def detrend_absolute_error():
+    '''
+    '''
+    return
