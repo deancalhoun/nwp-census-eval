@@ -139,3 +139,34 @@ def calculate_ifs_2t_an_anomaly(an_dir, clim_path, save_dir, year, month):
     save_path = os.path.join(save_dir, f'ifs_an_2t_anom_{year}{month}.nc')
     ds_an_anom.to_netcdf(save_path)
     return
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='Calculate IFS 2-meter temperature anomalies.')
+    parser.add_argument('--mode', type=str, choices=['fc', 'an'], required=True, help='Mode of operation: "fc" for forecast or "an" for analysis')
+    parser.add_argument('--clim_path', type=str, required=True, help='Path to climatology NetCDF file')
+    parser.add_argument('--save_dir', type=str, required=True, help='Directory to save output anomalies')
+    parser.add_argument('--year', type=str, required=True, help='Year of the data (e.g., 2023)')
+    parser.add_argument('--month', type=str, required=True, help='Month of the data (e.g, 01 for January)')
+
+    # Forecast-specific arguments
+    parser.add_argument('--fc_dir', type=str, help='Directory of IFS forecast data (required for forecast mode)')
+    parser.add_argument('--init_time', type=str, help='Initialization time of the forecast (e.g., 00, required for forecast mode)')
+    parser.add_argument('--lead_time', type=str, help='Lead time of the forecast (e.g., 24h, required for forecast mode)')
+    
+    # Analysis-specific arguments
+    parser.add_argument('--an_dir', type=str, help='Directory of IFS analysis data (required for analysis mode)')
+    
+    args = parser.parse_args()
+
+    # Validate mode-specific arguments
+    if args.mode == 'fc':
+        if not args.fc_dir or not args.init_time or not args.lead_time:
+            parser.error("Forecast mode requires --fc_dir, --init_time, and --lead_time arguments")
+        # Call the forecast anomaly calculation function
+        calculate_ifs_2t_fc_anomaly(args.fc_dir, args.clim_path, args.save_dir, args.year, args.month, args.init_time, args.lead_time)
+    elif args.mode == 'an':
+        if not args.an_dir:
+            parser.error("Analysis mode requires --an_dir argument")
+        # Call the analysis anomaly calculation function
+        calculate_ifs_2t_an_anomaly(args.an_dir, args.clim_path, args.save_dir, args.year, args.month)
