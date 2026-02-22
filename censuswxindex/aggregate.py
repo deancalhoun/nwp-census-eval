@@ -145,11 +145,80 @@ class ForecastAggregator(GeoAggregator):
         self.fc_data_table.to_csv(save_path)
 
 class AnalysisAggregator(GeoAggregator):
-    def __init__(self, shapefile_path, sample_datafile_path, var_name):
-        super().__init__(shapefile_path, sample_datafile_path, var_name)
+    def __init__(self, shapefile_path, analysis_files, var_name, latname='latitude', lonname='longitude', coords="WGS84", silent=True):
+        assert all(
+            isinstance(item, tuple) and len(item) == 2
+            for item in analysis_files
+        ), "analysis_files must be [(file_path, time), ...]"
+        grid_path = analysis_files[0][0]
+        super().__init__(shapefile_path, grid_path, latname, lonname, coords, silent)
+        self._set_analysis_state(analysis_files, var_name)
+        self._assert_analysis_grids_match()
 
-    def build_data_table(self, start_date, end_date, init_times, lead_times):
-        return
+    def __repr__(self):
+        n_files = len(self.analysis_files)
+        if len(self.times) > 6:
+            times = '\t' + '\n\t'.join(self.times[:3] + ['...'] + self.times[-3:])
+        else:
+            times = '\t' + '\n\t'.join(self.times)
+        return f"AnalysisAggregator\nn_files: {n_files}\ntimes:\n{times}\nvar_name: {self.var_name!r}\nshapefile: {self.shapefile_path!r}\n{self.grid!r}\nCRS: {self.coords!r}"
 
-class KoppenAggregator():
+    @classmethod
+    def from_geo_aggregator(cls, geo_aggregator, analysis_files, var_name):
+        assert all(
+            isinstance(item, tuple) and len(item) == 2
+            for item in analysis_files
+        ), "analysis_files must be [(file_path, time), ...]"
+        instance = cls.__new__(cls)
+        instance.shapefile_path = geo_aggregator.shapefile_path
+        instance.grid = geo_aggregator.grid
+        instance.shapefile = geo_aggregator.shapefile
+        instance.weightmap = geo_aggregator.weightmap
+        instance.latname = geo_aggregator.latname
+        instance.lonname = geo_aggregator.lonname
+        instance.coords = geo_aggregator.coords
+        instance.silent = geo_aggregator.silent
+        instance._set_analysis_state(analysis_files, var_name)
+        instance._assert_analysis_grids_match()
+        return instance
+
+    def _set_analysis_state(self, analysis_files, var_name):
+        self.var_name = var_name
+        self.analysis_files = analysis_files
+        self.times = sorted([str(x) for x in np.unique([t[1] for t in analysis_files])])
+        self.an_data_table = None
+
+    def _assert_analysis_grids_match(self):
+        """Assert all analysis files share the same lat/lon grid as self.grid."""
+        ref_lat = self.grid[self.latname].values
+        ref_lon = self.grid[self.lonname].values
+        for path, _ in self.analysis_files:
+            with xr.open_dataset(path) as ds:
+                lat_ok = np.array_equal(ds[self.latname].values, ref_lat)
+                lon_ok = np.array_equal(ds[self.lonname].values, ref_lon)
+                if not (lat_ok and lon_ok):
+                    raise ValueError(
+                        f"Grid in {path} does not match expected grid. "
+                        f"All analysis files (and the inherited grid if from GeoAggregator) must have identical lat/lon."
+                    )
+
+    def aggregate(self, datafile_path, time):
+        """Aggregates an analysis file for a single time."""
+        df_agg = super().aggregate(datafile_path, self.var_name).rename(columns={'GEOID': 'geo_id'})
+        df_agg['time'] = pd.to_datetime(time)
+        return df_agg[['geo_id', 'time', self.var_name]]
+
+    def build_data_table(self):
+        results = []
+        for datafile_path, time in self.analysis_files:
+            df_an = self.aggregate(datafile_path, time)
+            results.append(df_an)
+        self.an_data_table = pd.concat(results, ignore_index=True)
+        return self.an_data_table
+
+    def save_data_table(self, save_path):
+        assert self.an_data_table is not None
+        self.an_data_table.to_csv(save_path)
+
+class KoppenAggregator(GeoAggregator):
     pass
