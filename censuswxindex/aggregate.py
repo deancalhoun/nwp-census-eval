@@ -164,7 +164,7 @@ class AnalysisAggregator(GeoAggregator):
         return f"AnalysisAggregator\nn_files: {n_files}\ntimes:\n{times}\nvar_name: {self.var_name!r}\nshapefile: {self.shapefile_path!r}\n{self.grid!r}\nCRS: {self.coords!r}"
 
     @classmethod
-    def from_geo_aggregator(cls, geo_aggregator, analysis_files, var_name):
+    def from_GeoAggregator(cls, geo_aggregator, analysis_files, var_name):
         assert all(
             isinstance(item, tuple) and len(item) == 2
             for item in analysis_files
@@ -203,8 +203,11 @@ class AnalysisAggregator(GeoAggregator):
                     )
 
     def aggregate(self, datafile_path, time):
-        """Aggregates an analysis file for a single time."""
-        df_agg = super().aggregate(datafile_path, self.var_name).rename(columns={'GEOID': 'geo_id'})
+        """Aggregates an analysis file for a single time. Selects the time slice before aggregating."""
+        with xr.open_dataset(datafile_path) as ds:
+            ds_slice = ds.sel(time=pd.to_datetime(time), method='nearest')
+        aggregated = xagg.aggregate(ds_slice, self.weightmap, silent=self.silent)
+        df_agg = aggregated.to_dataframe().dropna(subset=[self.var_name]).reset_index().drop(columns=['poly_idx']).rename(columns={'GEOID': 'geo_id'})
         df_agg['time'] = pd.to_datetime(time)
         return df_agg[['geo_id', 'time', self.var_name]]
 
@@ -220,5 +223,5 @@ class AnalysisAggregator(GeoAggregator):
         assert self.an_data_table is not None
         self.an_data_table.to_csv(save_path)
 
-class KoppenAggregator(GeoAggregator):
+class CategoricalAggregator(GeoAggregator):
     pass
