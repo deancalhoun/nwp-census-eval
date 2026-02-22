@@ -143,3 +143,6 @@ dmypy.json
 
 # TIF
 *.tif
+
+# CSV
+*.csv
