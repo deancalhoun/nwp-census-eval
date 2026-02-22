@@ -44,6 +44,10 @@ class GeoAggregator:
 
 class ForecastAggregator(GeoAggregator):
     def __init__(self, shapefile_path, forecast_files, var_name, coords="WGS84", silent=True):
+        assert all(
+            isinstance(item, tuple) and len(item) == 2
+            for item in forecast_files
+        ), "forecast_files must be [(file_path, lead_time), ...]"
         datafile_paths = [path for path, _ in forecast_files]
         super().__init__(shapefile_path, datafile_paths, var_name, coords, silent)
         self.forecast_files = forecast_files
