@@ -63,7 +63,7 @@ class ForecastAggregator(GeoAggregator):
             init_times = '\t'+'\n\t'.join(self.init_times[:3]+['...']+self.init_times[-3:])
         else:
             init_times = '\t'+'\n\t'.join(self.init_times)
-        return f"ForecastAggregator\nshapefile: {self.shapefile_path!r}\nn_files: {n_files}\ninit_times:\n{init_times}\nlead_times: {self.lead_times!r}\nvar_name: {self.var_name!r}\n{self.grid!r}\nCRS: {self.coords!r}"
+        return f"ForecastAggregator\nn_files: {n_files}\ninit_times:\n{init_times}\nlead_times: {self.lead_times!r}\nvar_name: {self.var_name!r}\nshapefile: {self.shapefile_path!r}\n{self.grid!r}\nCRS: {self.coords!r}"
 
     @classmethod
     def from_GeoAggregator(cls, geo_aggregator, forecast_files, var_name):
