@@ -66,7 +66,7 @@ class ForecastAggregator(GeoAggregator):
         return f"ForecastAggregator\nshapefile: {self.shapefile_path!r}\nn_files: {n_files}\ninit_times:\n{init_times}\nlead_times: {self.lead_times!r}\nvar_name: {self.var_name!r}\n{self.grid!r}\nCRS: {self.coords!r}"
 
     @classmethod
-    def from_geo_aggregator(cls, geo_aggregator, forecast_files, var_name):
+    def from_GeoAggregator(cls, geo_aggregator, forecast_files, var_name):
         assert all(
             isinstance(item, tuple) and len(item) == 3
             for item in forecast_files
