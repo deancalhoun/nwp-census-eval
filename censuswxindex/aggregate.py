@@ -151,12 +151,5 @@ class AnalysisAggregator(GeoAggregator):
     def build_data_table(self, start_date, end_date, init_times, lead_times):
         return
 
-class ClimatologyAggregator(GeoAggregator):
-    def __init__(self, shapefile_path, sample_datafile_path, var_name):
-        super().__init__(shapefile_path, sample_datafile_path, var_name)
-
-    def build_data_table(self, start_date, end_date, init_times, lead_times):
-        return
-
 class KoppenAggregator():
     pass
