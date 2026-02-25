@@ -146,3 +146,6 @@ dmypy.json
 
 # CSV
 *.csv
+
+# PBS
+*.PBS
