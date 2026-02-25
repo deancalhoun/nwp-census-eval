@@ -317,10 +317,29 @@ def _run_all(all_chunks, fc_save_path, an_save_path, n_parallel):
                "key_fn": _an_key_fn, "label": "Analysis"},
     }
     for st in states.values():
-        if os.path.exists(st["path"]):
-            st["df"] = pd.read_parquet(st["path"])
-            st["done"] = _make_done_keys(st["df"], st["key_fn"])
-            logging.info(f"{st['label']} checkpoint: {len(st['done'])} entries already done")
+        tmp_path = st["path"] + ".tmp"
+        # Prefer final path; if missing, try recovering from a complete .tmp (saved but rename not yet done)
+        load_path = st["path"] if os.path.exists(st["path"]) else (tmp_path if os.path.exists(tmp_path) else None)
+        if load_path is not None:
+            try:
+                st["df"] = pd.read_parquet(load_path)
+                st["done"] = _make_done_keys(st["df"], st["key_fn"])
+                if load_path == tmp_path:
+                    os.rename(tmp_path, st["path"])
+                    logging.info(f"{st['label']} checkpoint: recovered from .tmp, {len(st['done'])} entries already done")
+                else:
+                    logging.info(f"{st['label']} checkpoint: {len(st['done'])} entries already done")
+            except Exception as e:
+                broken_path = load_path + ".broken"
+                logging.warning(
+                    f"{st['label']} checkpoint unreadable ({e}); moving to {broken_path} and starting fresh"
+                )
+                try:
+                    os.rename(load_path, broken_path)
+                except OSError:
+                    pass
+                st["df"] = None
+                st["done"] = set()
 
     def _handle_result(tag, group_key, df_chunk):
         if df_chunk is None:
@@ -328,7 +347,10 @@ def _run_all(all_chunks, fc_save_path, an_save_path, n_parallel):
         st = states[tag]
         st["df"] = pd.concat([st["df"], df_chunk], ignore_index=True) if st["df"] is not None else df_chunk
         st["done"].update(st["key_fn"](df_chunk))
-        st["df"].to_parquet(st["path"])
+        # Atomic write: write to .tmp then rename so a killed process never leaves a broken footer
+        tmp_path = st["path"] + ".tmp"
+        st["df"].to_parquet(tmp_path)
+        os.rename(tmp_path, st["path"])
         logging.info(f"{st['label']} checkpoint: saved {group_key} ({len(st['df'])} rows total)")
 
     if n_parallel == 1:
@@ -353,6 +375,35 @@ def _run_all(all_chunks, fc_save_path, an_save_path, n_parallel):
                     _handle_result(tag, group_key, df_chunk)
 
     return states["fc"]["df"], states["an"]["df"]
+
+
+# ---------------------------------------------------------------------------
+# Restore forecast table from bias table
+# ---------------------------------------------------------------------------
+def restore_fc_from_bias(save_dir=None, error_path=None, fc_path=None, var_name=VAR_NAME):
+    """Reconstruct ifs_fc_2t_county.parquet from ifs_fc_bias_2t_county.parquet.
+
+    The bias table has (geo_id, valid_time, init_time, lead_time, t2m_fc, ...).
+    The forecast table needs (geo_id, valid_time, init_time, lead_time, t2m).
+    """
+    save_dir = save_dir or SAVE_DIR
+    error_path = error_path or os.path.join(save_dir, "ifs_fc_bias_2t_county.parquet")
+    fc_path = fc_path or os.path.join(save_dir, "ifs_fc_2t_county.parquet")
+
+    if not os.path.exists(error_path):
+        logging.error(f"Bias table not found: {error_path}")
+        return False
+
+    fc_cols = ["geo_id", "valid_time", "init_time", "lead_time", f"{var_name}_fc"]
+    logging.info(f"Reading bias table (columns {fc_cols}) from {error_path} ...")
+    df = pd.read_parquet(error_path, columns=fc_cols)
+    df = df.rename(columns={f"{var_name}_fc": var_name})
+    logging.info(f"Restoring forecast table: {len(df)} rows -> {fc_path}")
+    tmp_path = fc_path + ".tmp"
+    df.to_parquet(tmp_path)
+    os.rename(tmp_path, fc_path)
+    logging.info("Done.")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +488,16 @@ if __name__ == "__main__":
         "--n-parallel", type=int, default=1,
         help="Number of months to process simultaneously (default: 1).",
     )
+    parser.add_argument(
+        "--restore-fc-from-bias",
+        action="store_true",
+        help="Reconstruct ifs_fc_2t_county.parquet from the bias table and exit.",
+    )
     args = parser.parse_args()
+
+    if args.restore_fc_from_bias:
+        restore_fc_from_bias()
+        sys.exit(0)
 
     START = args.start
     END = args.end
