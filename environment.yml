@@ -1,21 +1,27 @@
 name: censuswxindex
 channels:
   - conda-forge
+  - nodefaults
 dependencies:
-  - python=3.13.2
+  - python=3.11
+  - pip
+  # Dev / notebooks
   - ipykernel
-  - numpy
-  - scipy
-  - pandas
+  # Core scientific stack
+  - cartopy
+  - us
+  - ecmwf-api-client
   - geopandas
   - matplotlib
-  - seaborn
-  - xarray
-  - netCDF4
-  - xagg
-  - cartopy
-  - ecmwf-api-client
+  - netcdf4
+  - numpy
   - openpyxl
+  - pandas
+  - scipy
+  - seaborn
+  - xagg
+  - xarray
+  # Optional: ML tools
   # - scikit-learn
   # - torch
   # - tensorflow
