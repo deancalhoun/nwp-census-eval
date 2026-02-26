@@ -44,8 +44,8 @@ SHAPEFILE_PATH = os.path.join(
 )
 FC_DIR = os.path.join(SCRATCH, "ecmwf/ifs/fc/0.125/2t")
 AN_DIR = os.path.join(SCRATCH, "ecmwf/ifs/an/0.125/2t")
-CLIM_PATH = os.path.join(SCRATCH, "ecmwf/era5/era5_2t_county_climatology_1991_2020.parquet")
-SAVE_DIR = os.path.join(SCRATCH, "ecmwf/ifs")
+CLIM_PATH = os.path.join(SCRATCH, "aggregated/era5_2t_county_climatology_1991_2020.parquet")
+SAVE_DIR = os.path.join(SCRATCH, "aggregated")
 
 START = "2016-01-01"
 END = "2024-12-31"
