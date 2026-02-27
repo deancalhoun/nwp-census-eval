@@ -402,7 +402,7 @@ class CensusDataClient:
 
             # Keep geography columns and estimate columns only
             geo_cols = [c for c in df.columns if c in ["NAME", "state", "county", "tract"]]
-            estimate_cols = [c for c in df.columns if c.endswith("E")]
+            estimate_cols = [c for c in df.columns if c.endswith("_E")]
             keep_cols = geo_cols + estimate_cols
             df = df[keep_cols]
 
