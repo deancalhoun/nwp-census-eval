@@ -1,13 +1,17 @@
-from typing import Any
-
+import glob
+import netCDF4
+import os
+import xagg
 import numpy as np
 import xarray as xr
-
+import geopandas as gpd
+import pandas as pd
+from typing import Any
+from xagg.auxfuncs import fix_ds
 try:
     from tqdm import tqdm
 except ImportError:
     tqdm = None
-
 
 def _maybe_progress(iterable, total, desc, silent, position=None):
     """Wrap iterable with tqdm when silent=False and tqdm available; else log at intervals.
@@ -24,14 +28,12 @@ def _maybe_progress(iterable, total, desc, silent, position=None):
     step = max(1, min(total // 10, 10))
     return _log_progress(iterable, total, desc, step)
 
-
 def _log_progress(iterable, total, desc, step):
     """Yield items and print progress every step items."""
     for i, item in enumerate(iterable):
         if i > 0 and i % step == 0:
             print(f"  {desc}: {i}/{total}")
         yield item
-
 
 def _add_writable_bnds(ds):
     """Add lat_bnds and lon_bnds so xagg skips get_bnds (avoids read-only error)."""
@@ -47,13 +49,6 @@ def _add_writable_bnds(ds):
             bnds = np.stack([edges[:-1], edges[1:]], axis=1)
         ds[var + '_bnds'] = xr.DataArray(bnds, dims=(var, 'bnds'), coords={var: ds[var]})
 
-import geopandas as gpd
-import pandas as pd
-import glob
-import netCDF4
-import os
-import xagg
-
 class GeoAggregator:
     def __init__(self, shapefile_path, grid_path, coords="WGS84", silent=True):
         '''
@@ -66,7 +61,6 @@ class GeoAggregator:
         with xr.open_dataset(grid_path) as ds:
             sample_datafile = ds.load().copy(deep=True)
         # Pre-process for xagg: convert lon 0-360 to -180-180, add bounds (avoids read-only error in xagg.get_bnds)
-        from xagg.auxfuncs import fix_ds
         sample_datafile = fix_ds(sample_datafile)
         _add_writable_bnds(sample_datafile)
         self.grid = sample_datafile[['lat', 'lon']].coords
@@ -93,7 +87,6 @@ class GeoAggregator:
             aggregated: the aggregated data (xr.Dataset)
         '''
         ds = xr.open_dataset(datafile_path)
-        from xagg.auxfuncs import fix_ds
         ds = fix_ds(ds)  # weightmap expects lat/lon
         aggregated = xagg.aggregate(ds, self.weightmap, silent=self.silent)
         df_agg = aggregated.to_dataframe().dropna(subset=[var_name]).reset_index().drop(columns=['poly_idx'])
@@ -150,7 +143,6 @@ class ForecastAggregator(GeoAggregator):
         """Assert all forecast files share the same lat/lon grid as self.grid."""
         ref_lat = self.grid['lat'].values
         ref_lon = self.grid['lon'].values
-        from xagg.auxfuncs import fix_ds
         for path, _, _ in self.forecast_files:
             with xr.open_dataset(path) as ds:
                 ds = fix_ds(ds)  # files may use latitude/longitude; normalize to lat/lon
@@ -250,7 +242,6 @@ class AnalysisAggregator(GeoAggregator):
         """Assert all analysis files share the same lat/lon grid as self.grid."""
         ref_lat = self.grid['lat'].values
         ref_lon = self.grid['lon'].values
-        from xagg.auxfuncs import fix_ds
         for path, _ in self.analysis_files:
             with xr.open_dataset(path) as ds:
                 ds = fix_ds(ds)  # files may use latitude/longitude; normalize to lat/lon
@@ -264,7 +255,6 @@ class AnalysisAggregator(GeoAggregator):
 
     def aggregate(self, datafile_path, time):
         """Aggregates an analysis file for a single time. Selects the time slice before aggregating."""
-        from xagg.auxfuncs import fix_ds
         with xr.open_dataset(datafile_path) as ds:
             ds_slice = ds.sel(time=pd.to_datetime(time), method='nearest')
         ds_slice = fix_ds(ds_slice)  # weightmap expects lat/lon
