@@ -7,22 +7,22 @@ import us
 import numpy as np
 import pandas as pd
 from ecmwfapi import ECMWFService
+from dateutil.relativedelta import relativedelta
 
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 ## IFS FORECAST DATA ##
-def retrieve_forecast_data(target_dir, date, param, init_times, lead_times, filter_file, grid="0.125", model="ifs", bounds=None):
+def retrieve_forecast_data(path, param, date, lead_times, init_hours=["0000", "1200"], grid="0.125", model="ifs", bounds=None):
     '''
     Downloads NWP model forecast data from ECMWF MARS archive for a given date.
     
     Inputs:
-        target_dir: parent directory to save data within (str)
+        path: path to saved data file (str)
         date: date to retrieve data for (str, YYYY-MM-DD)
         param: tuple of parameter short name and code (str, str)
-        init_times: list of initalization times (list of str)
+        init_hours: list of initalization hours (list of str, HHHH)
         lead_times: list of lead times (list of str)
-        filter_file: path to grib_filter file (str)
         grid: grid resolution (str)
         model: NWP model name (str)
         bounds: latitude and longitude boundaries [deg N, deg W, deg S, deg E] (list of str) or None for global
@@ -31,60 +31,40 @@ def retrieve_forecast_data(target_dir, date, param, init_times, lead_times, filt
     '''
     assert model in ["ifs", "aifs"]
     assert bounds is None or len(bounds) == 4
-
-    # Create subdirectories
-    for init_time in init_times:
-        for lead_time in lead_times:
-            path = os.path.join(target_dir, grid, param[0], init_time, lead_time)
-            os.makedirs(path, exist_ok=True)
     
     # Establish API connection to ECMWF MARS archive
     server = ECMWFService("mars")
     
     # Retrieve data
-    tempfile = os.path.join(target_dir, grid, param[0], f'ifs_fc_temp.grib')
-    paths_nc = [path for init_time in init_times for lead_time in lead_times for path in glob.glob(os.path.join(*[target_dir, grid, param[0], init_time, lead_time, '*', '*', f'*{date.strftime("%Y%m%d")}.nc']))]
-    paths_grib = [path for init_time in init_times for lead_time in lead_times for path in glob.glob(os.path.join(*[target_dir, grid, param[0], init_time, lead_time, '*', '*', f'*{date.strftime("%Y%m%d")}.grib']))]
-    if (paths_nc and all(os.path.exists(path) for path in paths_nc)) or (paths_grib and all(os.path.exists(path) for path in paths_grib)):
-        # Skip already downloaded files
-        logging.info(f'Skipping already downloaded forecast data for {date}')
-        return
     try:
-            server.execute(
-                {
-                    'class': "ai" if model == "aifs" else "od",
-                    'type': "fc",
-                    'stream': "oper",
-                    'expver': "1",
-                    'repres': "gg",
-                    'levtype': "sfc",
-                    'param': param[1],
-                    'time': "/".join(init_times),
-                    'step': "/".join(lead_times),
-                    'domain': "g",
-                    'resol': "auto",
-                    'area': "/".join(bounds) if bounds else ["90", "-180", "-90", "180"],
-                    'grid': "/".join([grid, grid]),
-                    'padding': "0",
-                    'expect': "any",
-                    'date': date,
-                },
-                tempfile
-            )
-            
+        server.execute(
+            {
+                'class': "ai" if model == "aifs" else "od",
+                'type': "fc",
+                'stream': "oper",
+                'expver': "1",
+                'repres': "gg",
+                'levtype': "sfc",
+                'param': param[1],
+                'time': "/".join(init_hours),
+                'step': "/".join(lead_times),
+                'domain': "g",
+                'resol': "auto",
+                'area': "/".join(bounds if bounds is not None else ["90", "-180", "-90", "180"]),
+                'grid': "/".join([grid, grid]),
+                'padding': "0",
+                'expect': "any",
+                'date': date,
+            },
+            path
+        )       
     except Exception as e:
         logging.error(f'Forecast retrieval failed for {date}: {e}')
-        return
-
-    # Split the grib file into individual files
-    subprocess.run(f'grib_filter {filter_file} {tempfile}', shell=True)
-
-    # Delete temp file
-    subprocess.run(['rm', tempfile])
-    return
+        return None
+    return path
 
 ## IFS ANALYSIS DATA ##
-def retrieve_analysis_data(target_dir, date, param, valid_times, filter_file, grid="0.125", bounds=None):
+def retrieve_analysis_data(path, param, date, hours=["0000", "0600", "1200", "1800"], grid="0.125", bounds=None):
     '''
     Downloads IFS analysis data from ECMWF MARS archive
 
@@ -95,27 +75,15 @@ def retrieve_analysis_data(target_dir, date, param, valid_times, filter_file, gr
         valid_times: list of valid times (list of str)
         bounds: latitude and longitude boundaries [deg N, deg W, deg S, deg E] (list of str) or None for global
         grid: grid resolution (str)
-        filter_file: path to grib_filter file (str)
     Outputs:
         None
     '''
     assert bounds is None or len(bounds) == 4
 
-    # Create directory
-    path = os.path.join(target_dir, grid, param[0])
-    os.makedirs(path, exist_ok=True)
-
     # Establish API connection to ECMWF MARS archive
     server = ECMWFService("mars")
      
     # Retrieve data
-    tempfile = os.path.join(target_dir, grid, param[0], f'ifs_an_temp.grib')
-    paths_nc = glob.glob(os.path.join(target_dir, grid, param[0], '*', '*', f'*{date.strftime("%Y%m%d")}.nc'))
-    paths_grib = glob.glob(os.path.join(target_dir, grid, param[0], '*', '*', f'*{date.strftime("%Y%m%d")}.grib'))
-    if (paths_nc and all(os.path.exists(path) for path in paths_nc)) or (paths_grib and all(os.path.exists(path) for path in paths_grib)):
-        # Skip already downloaded files
-        logging.info(f'Skipping already downloaded analysis data for {date}')
-        return
     try:
             server.execute(
                 {
@@ -126,67 +94,167 @@ def retrieve_analysis_data(target_dir, date, param, valid_times, filter_file, gr
                     'repres': "gg",
                     'levtype': "sfc",
                     'param': param[1],
-                    'time': "/".join(valid_times),
+                    'time': "/".join(hours),
                     'step': "0",
                     'domain': "g",
                     'resol': "auto",
-                    'area': "/".join(bounds) if bounds else ["90", "-180", "-90", "180"],
+                    'area': "/".join(bounds if bounds is not None else ["90", "-180", "-90", "180"]),
                     'grid': "/".join([grid, grid]),
                     'padding': "0",
                     'expect': "any",
                     'date': date,
                 },
-                tempfile
+                path
             )
-                
     except Exception as e:
         logging.error(f'Analysis retrieval failed for {date}: {e}')
-        return
+        return None
+    return path
 
-    # Split the grib file into individual files
-    subprocess.run(f'grib_filter {filter_file} {tempfile}', shell=True)
-    
-    # Delete temp file
-    subprocess.run(['rm', tempfile])
-    return
-
-class ForecastDataClient:
-    def __init__(self, target_dir, start, end, param, init_times, lead_times, filter_file, grid="0.125", model="ifs", bounds=None):
-        self.target_dir = target_dir
-        self.start = start
-        self.end = end
+class ECMWFDataClient:
+    def __init__(self, base_dir, param, start, end, lead_times, init_hours=["0000", "1200"], grid="0.125", model="ifs", bounds=None):
+        self.base_dir = base_dir
+        self.fc_dir = os.path.join(base_dir, "fc")
+        self.an_dir = os.path.join(base_dir, "an")
         self.param = param
-        self.init_times = init_times
+        self.dates = pd.date_range(start=start, end=end, freq='D')
         self.lead_times = lead_times
+        self.init_hours = init_hours
+        self.init_times = self._get_init_times()
+        self.valid_times = self._get_valid_times()
+        self.valid_hours = np.unique([x.strftime("%H") + "00" for x in self.valid_times])
         self.grid = grid
-        self.filter_file = filter_file
         self.model = model
         self.bounds = bounds
 
-    def retrieve_data(self):
-        dates = pd.date_range(start=self.start, end=self.end, freq='D')
-        for date in dates:
-            date_str = date.strftime("%Y%m%d")
-            retrieve_forecast_data(self.target_dir, date_str, self.param, self.init_times, self.lead_times, self.filter_file, self.grid, self.model, self.bounds)
+    def _write_forecast_filter_file(self):
+        path = os.path.join(self.base_dir, "split_fc.txt")
+        with open(path, "w") as f:
+            f.write(f"write \"{self.fc_dir}/{self.grid}/[shortName]/[time]/[step]/{self.model}_fc_[shortName]_[time]_[step]_[date].grib\";")
+            f.close()
+        return path
+
+    def _write_analysis_filter_file(self):
+        path = os.path.join(self.base_dir, "split_an.txt")
+        with open(path, "w") as f:
+            f.write(f"write \"{self.an_dir}/{self.grid}/[shortName]/ifs_an_[shortName]_[date].grib\";")
+            f.close()
+        return path
+
+    def _get_init_times(self):
+        init_times = []
+        for date in self.dates:
+            for init in self.init_hours:
+                hour = int(init[:2])
+                init_time = date + relativedelta(hours=hour)
+                init_times.append(init_time)
+        return np.unique(init_times)
+
+    def _get_valid_times(self):
+        valid_times = []
+        for init_time in self.init_times:
+            for lead in self.lead_times:
+                lead_hours = int(lead)
+                valid_time = init_time + relativedelta(hours=lead_hours)
+                valid_times.append(valid_time)
+        return np.unique(valid_times)
+
+    def _make_forecast_dirs(self):
+        for init_hour in self.init_hours:
+            for lead_time in self.lead_times:
+                dir = os.path.join(self.fc_dir, self.grid, self.param[0], init_hour, lead_time)
+                os.makedirs(dir, exist_ok=True)
+        return
+    
+    def _make_analysis_dir(self):
+        dir = os.path.join(self.an_dir, self.grid, self.param[0])
+        os.makedirs(dir, exist_ok=True)
         return
 
-class AnalysisDataClient:  
-    def __init__(self, target_dir, start, end, param, valid_times, filter_file, grid="0.125", bounds=None):
-        self.target_dir = target_dir
-        self.start = start
-        self.end = end
-        self.param = param
-        self.valid_times = valid_times
-        self.filter_file = filter_file
-        self.grid = grid
-        self.bounds = bounds
-
-    def retrieve_data(self):
-        dates = pd.date_range(start=self.start, end=self.end, freq='D')
-        for date in dates:
-            date_str = date.strftime("%Y%m%d")
-            retrieve_analysis_data(self.target_dir, date_str, self.param, self.valid_times, self.filter_file, self.grid, self.bounds)
+    def _apply_filter(self, filter_file, tempfile):
+        subprocess.run(f'grib_filter {filter_file} {tempfile}', shell=True)
         return
+
+    def _rm(self, path):
+        subprocess.run(['rm', path])
+        return
+
+    def _sort_by_year_month(self, dir, date):
+        year, month = date.strftime("%Y"), date.strftime("%m")
+        path = os.path.join(dir, year, month)
+        os.makedirs(path, exist_ok=True)
+        datestr = date.strftime("%Y%m%d")
+        file_matching_date = glob.glob(os.path.join(dir, f"*{datestr}*"))
+        for file in file_matching_date:
+            newfile = os.path.join(dir, year, month, os.path.basename(file))
+            subprocess.run(f'mv {file} {newfile}', shell=True)
+
+    def _grib_to_netcdf(self, dir, remove=True):
+        grib_files = glob.glob(os.path.join(dir, f"*.grib"))
+        for grib_file in grib_files:
+            nc_file = os.path.splitext(grib_file)[0] + ".nc"
+            subprocess.run(f"grib_to_netcdf -o {nc_file} {grib_file}", shell=True)
+            if remove:
+                self._rm(grib_file)
+        return
+    
+    def _does_fc_exist(self, date):
+        # Duplicate: already retrieved, sorted, and converted
+        paths_nc = [path for init_hour in self.init_hours for lead_time in self.lead_times for path in glob.glob(os.path.join(*[self.fc_dir, self.grid, self.param[0], init_hour, lead_time, '*', '*', f'*{date.strftime("%Y%m%d")}.nc']))]
+        # Duplicate: already retrieved and sorted
+        paths_grib = [path for init_hour in self.init_hours for lead_time in self.lead_times for path in glob.glob(os.path.join(*[self.fc_dir, self.grid, self.param[0], init_hour, lead_time, '*', '*', f'*{date.strftime("%Y%m%d")}.grib']))]
+        if (paths_nc and all(os.path.exists(path) for path in paths_nc)) or (paths_grib and all(os.path.exists(path) for path in paths_grib)):
+            # Skip already downloaded files
+            logging.info(f'Skipping already downloaded forecast data for {date}')
+            return True
+        else:
+            return False
+
+    def _does_an_exist(self, date):
+        # Duplicate: already retrieved, sorted, and converted
+        paths_nc = glob.glob(os.path.join(self.an_dir, self.grid, self.param[0], '*', '*', f'*{date.strftime("%Y%m%d")}.nc'))
+        # Duplicate: already retrieved and sorted
+        paths_grib = glob.glob(os.path.join(self.an_dir, self.grid, self.param[0], '*', '*', f'*{date.strftime("%Y%m%d")}.grib'))
+        if (paths_nc and all(os.path.exists(path) for path in paths_nc)) or (paths_grib and all(os.path.exists(path) for path in paths_grib)):
+            # Skip already downloaded files
+            logging.info(f'Skipping already downloaded analysis data for {date}')
+            return True
+        else:
+            return False
+
+    def get_forecast(self):
+        self._make_forecast_dirs()
+        dir = os.path.join(self.fc_dir, self.grid, self.param[0])
+        filter_file = self._write_forecast_filter_file()
+        for date in self.dates:
+            if not self._does_fc_exist(date):
+                date_str = date.strftime("%Y-%m-%d")
+                tempfile = os.path.join(dir, f'ifs_fc_{date.strftime("%Y%m%d")}_temp.grib')
+                outfile = retrieve_forecast_data(tempfile, self.param, date_str, self.lead_times, self.init_hours, self.grid, self.model, self.bounds)
+                if outfile is not None:
+                    self._apply_filter(filter_file, outfile)
+                    self._rm(outfile)
+                    for init_hour in self.init_hours:
+                        for lead_time in self.lead_times:
+                            self._grib_to_netcdf(os.path.join(dir, init_hour, lead_time))
+                            self._sort_by_year_month(os.path.join(dir, init_hour, lead_time), date)
+        self._rm(filter_file)
+
+    def get_analysis(self):
+        self._make_analysis_dir()
+        dir = os.path.join(self.an_dir, self.grid, self.param[0])
+        filter_file = self._write_analysis_filter_file()
+        for date in self.dates:
+            if not self._does_an_exist(date):
+                date_str = date.strftime("%Y-%m-%d")
+                tempfile = os.path.join(dir, f'ifs_an_{date.strftime("%Y%m%d")}_temp.grib')
+                outfile = retrieve_analysis_data(tempfile, self.param, date_str, self.valid_hours, self.grid, self.bounds)
+                if outfile is not None:
+                    self._apply_filter(filter_file, outfile)
+                    self._rm(outfile)
+                    self._grib_to_netcdf(dir)
+                    self._sort_by_year_month(dir, date)
+        self._rm(filter_file)
 
 def retrieve_census_data(target_dir, table_list, level, base_url):
     '''
@@ -213,59 +281,7 @@ def retrieve_census_data(target_dir, table_list, level, base_url):
         raise ValueError("table_list cannot be empty. Please provide at least one table code.")
 
     # Dictionary associating state FIPS codes and state abbreviations
-    fips_state_names = {
-        "01": 'AL',
-        "02": 'AK',
-        "04": 'AZ',
-        "05": 'AR',
-        "06": 'CA',
-        "08": 'CO',
-        "09": 'CT',
-        "10": 'DE',
-        "11": 'DC',
-        "12": 'FL',
-        "13": 'GA',
-        "15": 'HI',
-        "16": 'ID',
-        "17": 'IL',
-        "18": 'IN',
-        "19": 'IA',
-        "20": 'KS',
-        "21": 'KY',
-        "22": 'LA',
-        "23": 'ME',
-        "24": 'MD',
-        "25": 'MA',
-        "26": 'MI',
-        "27": 'MN',
-        "28": 'MS',
-        "29": 'MO',
-        "30": 'MT',
-        "31": 'NE',
-        "32": 'NV',
-        "33": 'NH',
-        "34": 'NJ',
-        "35": 'NM',
-        "36": 'NY',
-        "37": 'NC',
-        "38": 'ND',
-        "39": 'OH',
-        "40": 'OK',
-        "41": 'OR',
-        "42": 'PA',
-        "44": 'RI',
-        "45": 'SC',
-        "46": 'SD',
-        "47": 'TN',
-        "48": 'TX',
-        "49": 'UT',
-        "50": 'VT',
-        "51": 'VA',
-        "53": 'WA',
-        "54": 'WV',
-        "55": 'WI',
-        "56": 'WY'
-    }
+    fips_state_names = {x.fips: x.abbr for x in us.states.STATES}
 
     ## Retrieve data
     for state_code in fips_state_names.keys():
