@@ -2,12 +2,15 @@ import os
 import logging
 import subprocess
 import glob
+import re
 import requests
 import us
 import numpy as np
 import pandas as pd
 from ecmwfapi import ECMWFService
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dateutil.relativedelta import relativedelta
+import uuid
 
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -112,7 +115,7 @@ def retrieve_analysis_data(path, param, date, hours=["0000", "0600", "1200", "18
     return path
 
 class ECMWFDataClient:
-    def __init__(self, base_dir, param, start, end, lead_times, init_hours=["0000", "1200"], grid="0.125", model="ifs", bounds=None):
+    def __init__(self, base_dir, param, start, end, lead_times, init_hours=["0000", "1200"], grid="0.125", model="ifs", bounds=None, max_concurrent_requests=20):
         self.base_dir = base_dir
         self.fc_dir = os.path.join(base_dir, "fc")
         self.an_dir = os.path.join(base_dir, "an")
@@ -126,6 +129,12 @@ class ECMWFDataClient:
         self.grid = grid
         self.model = model
         self.bounds = bounds
+        # ECMWF allows up to ~20 queued requests; cap concurrency accordingly
+        self.max_concurrent_requests = max(1, min(int(max_concurrent_requests), 20))
+        # Cache of forecast dates (YYYYMMDD) that are fully complete on disk
+        # for this run (i.e., have data for all init_hour/lead_time combos).
+        self._fc_existing_dates: set[str] | None = None
+        self._an_existing_dates: set[str] | None = None
 
     def _write_forecast_filter_file(self):
         path = os.path.join(self.base_dir, "split_fc.txt")
@@ -176,22 +185,163 @@ class ECMWFDataClient:
         return
 
     def _rm(self, path):
-        subprocess.run(['rm', path])
+        """Remove *path*, ignoring if it does not exist.
+
+        Concurrent workers or reruns may occasionally try to delete
+        the same temporary/GRIB file more than once; using rm -f keeps
+        the logs clean while remaining safe.
+        """
+        subprocess.run(['rm', '-f', path])
         return
 
     def _sort_by_year_month(self, dir, date):
-        year, month = date.strftime("%Y"), date.strftime("%m")
-        path = os.path.join(dir, year, month)
-        os.makedirs(path, exist_ok=True)
+        """Backwards-compatible wrapper that sorts files for a specific date.
+
+        Newer code should use _sort_by_year_month_from_filename(), which infers
+        the date from each filename. This helper is retained so older call sites
+        still behave as before.
+        """
         datestr = date.strftime("%Y%m%d")
-        file_matching_date = glob.glob(os.path.join(dir, f"*{datestr}*"))
-        for file in file_matching_date:
-            newfile = os.path.join(dir, year, month, os.path.basename(file))
-            subprocess.run(f'mv {file} {newfile}', shell=True)
+        self._sort_by_year_month_from_filename(dir, datestr=datestr)
+
+    def _sort_by_year_month_from_filename(self, dir, datestr=None):
+        """Move NetCDF files in *dir* into year/month subfolders.
+
+        The date is inferred from the filename pattern *_YYYYMMDD*.*.
+        If *datestr* is provided, only files containing that YYYYMMDD
+        substring are moved; otherwise all matching files are moved.
+        """
+        # Only move NetCDF files; GRIB files are handled separately by the
+        # conversion pipeline so we don't strand unconverted GRIBs in
+        # year/month folders.
+        pattern = re.compile(r".*_(\d{8})(?:\D.*)?\.nc$")
+        for file in glob.glob(os.path.join(dir, "*")):
+            if os.path.isdir(file):
+                continue
+            # Another worker may already have moved this file between the
+            # time glob() ran and now; skip cleanly if it disappeared.
+            if not os.path.exists(file):
+                continue
+            basename = os.path.basename(file)
+            m = pattern.match(basename)
+            if not m:
+                continue
+            file_datestr = m.group(1)
+            if datestr is not None and file_datestr != datestr:
+                continue
+            year, month = file_datestr[:4], file_datestr[4:6]
+            dest_dir = os.path.join(dir, year, month)
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(dest_dir, basename)
+            if os.path.abspath(file) == os.path.abspath(dest_path):
+                continue
+            # Make the move idempotent and quiet even under concurrent runs:
+            # if the file vanishes between the exists() check and mv, suppress
+            # the benign "cannot stat" noise from mv.
+            subprocess.run(['mv', file, dest_path], stderr=subprocess.DEVNULL)
+
+    def _cleanup_forecast_dirs(self):
+        """Pre-sort any existing forecast files before existence checks.
+
+        This ensures that _does_fc_exist(), which looks only in year/month
+        subfolders, can see already-downloaded data even if earlier runs
+        left files hanging in the init/lead directories.
+        """
+        root = os.path.join(self.fc_dir, self.grid, self.param[0])
+        for init_hour in self.init_hours:
+            for lead_time in self.lead_times:
+                subdir = os.path.join(root, init_hour, lead_time)
+                if not os.path.isdir(subdir):
+                    continue
+                self._sort_by_year_month_from_filename(subdir)
+
+    def _cleanup_analysis_dir(self):
+        """Pre-sort any existing analysis files before existence checks."""
+        dir = os.path.join(self.an_dir, self.grid, self.param[0])
+        if os.path.isdir(dir):
+            self._sort_by_year_month_from_filename(dir)
+
+    def _convert_all_forecast_grib(self):
+        """Convert any stray GRIB files anywhere under the forecast tree.
+
+        This is primarily a cleanup step for legacy runs where GRIBs may
+        have been moved into year/month folders before conversion. It is
+        safe and idempotent: existing NetCDFs are simply overwritten.
+        """
+        root = os.path.join(self.fc_dir, self.grid, self.param[0])
+        # Walk recursively so we catch GRIBs both in init/lead roots and
+        # in year/month subfolders.
+        for grib_file in glob.glob(os.path.join(root, "**", "*.grib"), recursive=True):
+            # Skip temporary GRIBs used as filter input.
+            if "temp" in os.path.basename(grib_file):
+                continue
+            nc_file = os.path.splitext(grib_file)[0] + ".nc"
+            subprocess.run(["grib_to_netcdf", "-o", nc_file, grib_file])
+            self._rm(grib_file)
+
+    def _refresh_existing_fc_dates(self):
+        """Scan forecast tree once to build a cache of *complete* dates.
+
+        A date is considered complete only if there is at least one
+        GRIB/NetCDF file for every (init_hour, lead_time) combination.
+        This avoids treating partially downloaded days as finished.
+        """
+        root = os.path.join(self.fc_dir, self.grid, self.param[0])
+        # Use NetCDF filenames (post-conversion) to infer dates.
+        pattern = re.compile(r".*_(\d{8})(?:\D.*)?\.nc$")
+        date_pairs: dict[str, set[tuple[str, str]]] = {}
+        expected_pairs = {(init_hour, lead_time) for init_hour in self.init_hours for lead_time in self.lead_times}
+        for init_hour in self.init_hours:
+            for lead_time in self.lead_times:
+                subdir = os.path.join(root, init_hour, lead_time)
+                if not os.path.isdir(subdir):
+                    continue
+                for ext in ("nc", "grib"):
+                    for path in glob.glob(os.path.join(subdir, "*", "*", f"*.{ext}")):
+                        basename = os.path.basename(path)
+                        m = pattern.match(basename)
+                        if not m:
+                            continue
+                        datestr = m.group(1)
+                        date_pairs.setdefault(datestr, set()).add((init_hour, lead_time))
+        complete_dates = {
+            datestr for datestr, pairs in date_pairs.items() if pairs.issuperset(expected_pairs)
+        }
+        self._fc_existing_dates = complete_dates
+        if complete_dates:
+            logging.info(f"Detected {len(complete_dates)} fully complete forecast days already on disk")
+        incomplete_dates = set(date_pairs.keys()) - complete_dates
+        if incomplete_dates:
+            logging.info(
+                f"Detected {len(incomplete_dates)} partially complete forecast days "
+                "that will be re-downloaded"
+            )
+
+    def _refresh_existing_an_dates(self):
+        """Scan analysis tree once to build a cache of existing dates."""
+        dir = os.path.join(self.an_dir, self.grid, self.param[0])
+        if not os.path.isdir(dir):
+            self._an_existing_dates = set()
+            return
+        pattern = re.compile(r".*_(\d{8})(?:\D.*)?\.(?:nc|grib)$")
+        dates: set[str] = set()
+        for ext in ("nc", "grib"):
+            for path in glob.glob(os.path.join(dir, "*", "*", f"*.{ext}")):
+                basename = os.path.basename(path)
+                m = pattern.match(basename)
+                if not m:
+                    continue
+                dates.add(m.group(1))
+        self._an_existing_dates = dates
+        if dates:
+            logging.info(f"Detected {len(dates)} analysis days already on disk")
 
     def _grib_to_netcdf(self, dir, remove=True):
         grib_files = glob.glob(os.path.join(dir, f"*.grib"))
         for grib_file in grib_files:
+            # Never convert temporary GRIBs; they should be removed after filtering.
+            if "temp" in os.path.basename(grib_file):
+                continue
             nc_file = os.path.splitext(grib_file)[0] + ".nc"
             subprocess.run(f"grib_to_netcdf -o {nc_file} {grib_file}", shell=True)
             if remove:
@@ -199,62 +349,233 @@ class ECMWFDataClient:
         return
     
     def _does_fc_exist(self, date):
-        # Duplicate: already retrieved, sorted, and converted
-        paths_nc = [path for init_hour in self.init_hours for lead_time in self.lead_times for path in glob.glob(os.path.join(*[self.fc_dir, self.grid, self.param[0], init_hour, lead_time, '*', '*', f'*{date.strftime("%Y%m%d")}.nc']))]
-        # Duplicate: already retrieved and sorted
-        paths_grib = [path for init_hour in self.init_hours for lead_time in self.lead_times for path in glob.glob(os.path.join(*[self.fc_dir, self.grid, self.param[0], init_hour, lead_time, '*', '*', f'*{date.strftime("%Y%m%d")}.grib']))]
-        if (paths_nc and all(os.path.exists(path) for path in paths_nc)) or (paths_grib and all(os.path.exists(path) for path in paths_grib)):
-            # Skip already downloaded files
-            logging.info(f'Skipping already downloaded forecast data for {date}')
-            return True
-        else:
+        """Return True if all forecast files for *date* already exist.
+
+        When _fc_existing_dates is populated, this is a constant-time
+        membership check; otherwise it falls back to the legacy, slower
+        glob-based implementation.
+        """
+        datestr = date.strftime("%Y%m%d")
+        if self._fc_existing_dates is not None:
+            if datestr in self._fc_existing_dates:
+                logging.info(f'Skipping already downloaded forecast data for {date}')
+                return True
             return False
 
+        # Fallback: legacy glob-based check
+        paths_nc = [
+            path
+            for init_hour in self.init_hours
+            for lead_time in self.lead_times
+            for path in glob.glob(
+                os.path.join(
+                    *[
+                        self.fc_dir,
+                        self.grid,
+                        self.param[0],
+                        init_hour,
+                        lead_time,
+                        "*",
+                        "*",
+                        f"*{datestr}.nc",
+                    ]
+                )
+            )
+        ]
+        paths_grib = [
+            path
+            for init_hour in self.init_hours
+            for lead_time in self.lead_times
+            for path in glob.glob(
+                os.path.join(
+                    *[
+                        self.fc_dir,
+                        self.grid,
+                        self.param[0],
+                        init_hour,
+                        lead_time,
+                        "*",
+                        "*",
+                        f"*{datestr}.grib",
+                    ]
+                )
+            )
+        ]
+        if (paths_nc and all(os.path.exists(path) for path in paths_nc)) or (
+            paths_grib and all(os.path.exists(path) for path in paths_grib)
+        ):
+            logging.info(f'Skipping already downloaded forecast data for {date}')
+            return True
+        return False
+
     def _does_an_exist(self, date):
-        # Duplicate: already retrieved, sorted, and converted
-        paths_nc = glob.glob(os.path.join(self.an_dir, self.grid, self.param[0], '*', '*', f'*{date.strftime("%Y%m%d")}.nc'))
-        # Duplicate: already retrieved and sorted
-        paths_grib = glob.glob(os.path.join(self.an_dir, self.grid, self.param[0], '*', '*', f'*{date.strftime("%Y%m%d")}.grib'))
-        if (paths_nc and all(os.path.exists(path) for path in paths_nc)) or (paths_grib and all(os.path.exists(path) for path in paths_grib)):
-            # Skip already downloaded files
+        """Return True if all analysis files for *date* already exist."""
+        datestr = date.strftime("%Y%m%d")
+        if self._an_existing_dates is not None:
+            if datestr in self._an_existing_dates:
+                logging.info(f'Skipping already downloaded analysis data for {date}')
+                return True
+            return False
+
+        # Fallback: legacy glob-based check
+        paths_nc = glob.glob(
+            os.path.join(
+                self.an_dir,
+                self.grid,
+                self.param[0],
+                "*",
+                "*",
+                f"*{datestr}.nc",
+            )
+        )
+        paths_grib = glob.glob(
+            os.path.join(
+                self.an_dir,
+                self.grid,
+                self.param[0],
+                "*",
+                "*",
+                f"*{datestr}.grib",
+            )
+        )
+        if (paths_nc and all(os.path.exists(path) for path in paths_nc)) or (
+            paths_grib and all(os.path.exists(path) for path in paths_grib)
+        ):
             logging.info(f'Skipping already downloaded analysis data for {date}')
             return True
-        else:
-            return False
+        return False
+
+    def _download_forecast_for_date(self, date, dir, filter_file):
+        """Full forecast retrieval + post-processing pipeline for a single date."""
+        if self._does_fc_exist(date):
+            return
+        date_str = date.strftime("%Y-%m-%d")
+        # Use a temp filename that does NOT include the date string so that
+        # _sort_by_year_month() will never match or move it into year/month
+        # subdirectories. This mirrors the analysis workflow and prevents
+        # stranded temp files.
+        tempfile = os.path.join(dir, f'ifs_fc_temp_{uuid.uuid4().hex}.grib')
+        outfile = retrieve_forecast_data(
+            tempfile,
+            self.param,
+            date_str,
+            self.lead_times,
+            self.init_hours,
+            self.grid,
+            self.model,
+            self.bounds,
+        )
+        if outfile is None:
+            return
+        self._apply_filter(filter_file, outfile)
+        self._rm(outfile)
+        for init_hour in self.init_hours:
+            for lead_time in self.lead_times:
+                subdir = os.path.join(dir, init_hour, lead_time)
+                self._grib_to_netcdf(subdir)
+                # Sort any NetCDF/GRIB files in this subdirectory into
+                # year/month folders based on the date encoded in the
+                # filename. This is robust even if previous runs left
+                # unsorted files hanging around.
+                self._sort_by_year_month_from_filename(subdir)
+
+    def _download_analysis_for_date(self, date, dir, filter_file):
+        """Full analysis retrieval + post-processing pipeline for a single date."""
+        if self._does_an_exist(date):
+            return
+        date_str = date.strftime("%Y-%m-%d")
+        # Use a temp filename that does NOT include the date string so that
+        # _sort_by_year_month() will never match or move it into year/month
+        # subdirectories. This prevents leftover temp files from being
+        # stranded in the final directory structure.
+        tempfile = os.path.join(dir, f'ifs_an_temp_{uuid.uuid4().hex}.grib')
+        outfile = retrieve_analysis_data(
+            tempfile,
+            self.param,
+            date_str,
+            self.valid_hours,
+            self.grid,
+            self.bounds,
+        )
+        if outfile is None:
+            return
+        self._apply_filter(filter_file, outfile)
+        self._rm(outfile)
+        self._grib_to_netcdf(dir)
+        # Sort any NetCDF/GRIB files in this directory into year/month
+        # folders based on the date encoded in the filename. This is
+        # robust even if previous runs left unsorted files hanging
+        # around in the root analysis directory.
+        self._sort_by_year_month_from_filename(dir)
 
     def get_forecast(self):
         self._make_forecast_dirs()
         dir = os.path.join(self.fc_dir, self.grid, self.param[0])
+        # First, convert any stray GRIBs from legacy runs so that only
+        # NetCDFs remain to be sorted and checked for completeness.
+        self._convert_all_forecast_grib()
+        # First, sort any existing files so that _does_fc_exist() can
+        # correctly detect previously downloaded data in year/month folders.
+        self._cleanup_forecast_dirs()
+        # Build a cached set of existing forecast dates to make skip checks fast.
+        self._refresh_existing_fc_dates()
         filter_file = self._write_forecast_filter_file()
-        for date in self.dates:
-            if not self._does_fc_exist(date):
-                date_str = date.strftime("%Y-%m-%d")
-                tempfile = os.path.join(dir, f'ifs_fc_{date.strftime("%Y%m%d")}_temp.grib')
-                outfile = retrieve_forecast_data(tempfile, self.param, date_str, self.lead_times, self.init_hours, self.grid, self.model, self.bounds)
-                if outfile is not None:
-                    self._apply_filter(filter_file, outfile)
-                    self._rm(outfile)
-                    for init_hour in self.init_hours:
-                        for lead_time in self.lead_times:
-                            self._grib_to_netcdf(os.path.join(dir, init_hour, lead_time))
-                            self._sort_by_year_month(os.path.join(dir, init_hour, lead_time), date)
-        self._rm(filter_file)
+        dates_to_download = [d for d in self.dates if not self._does_fc_exist(d)]
+        if not dates_to_download:
+            logging.info("No missing forecast data; nothing to download.")
+            self._rm(filter_file)
+            return
+        logging.info(
+            f"Starting forecast retrieval for {len(dates_to_download)} dates "
+            f"with up to {self.max_concurrent_requests} concurrent ECMWF requests"
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=self.max_concurrent_requests) as executor:
+                future_to_date = {
+                    executor.submit(self._download_forecast_for_date, date, dir, filter_file): date
+                    for date in dates_to_download
+                }
+                for future in as_completed(future_to_date):
+                    date = future_to_date[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logging.error(f"Forecast retrieval pipeline failed for {date}: {e}")
+        finally:
+            self._rm(filter_file)
 
     def get_analysis(self):
         self._make_analysis_dir()
         dir = os.path.join(self.an_dir, self.grid, self.param[0])
+        # First, sort any existing files so that _does_an_exist() can
+        # correctly detect previously downloaded data in year/month folders.
+        self._cleanup_analysis_dir()
+        # Build a cached set of existing analysis dates to make skip checks fast.
+        self._refresh_existing_an_dates()
         filter_file = self._write_analysis_filter_file()
-        for date in self.dates:
-            if not self._does_an_exist(date):
-                date_str = date.strftime("%Y-%m-%d")
-                tempfile = os.path.join(dir, f'ifs_an_{date.strftime("%Y%m%d")}_temp.grib')
-                outfile = retrieve_analysis_data(tempfile, self.param, date_str, self.valid_hours, self.grid, self.bounds)
-                if outfile is not None:
-                    self._apply_filter(filter_file, outfile)
-                    self._rm(outfile)
-                    self._grib_to_netcdf(dir)
-                    self._sort_by_year_month(dir, date)
-        self._rm(filter_file)
+        dates_to_download = [d for d in self.dates if not self._does_an_exist(d)]
+        if not dates_to_download:
+            logging.info("No missing analysis data; nothing to download.")
+            self._rm(filter_file)
+            return
+        logging.info(
+            f"Starting analysis retrieval for {len(dates_to_download)} dates "
+            f"with up to {self.max_concurrent_requests} concurrent ECMWF requests"
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=self.max_concurrent_requests) as executor:
+                future_to_date = {
+                    executor.submit(self._download_analysis_for_date, date, dir, filter_file): date
+                    for date in dates_to_download
+                }
+                for future in as_completed(future_to_date):
+                    date = future_to_date[future]
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logging.error(f"Analysis retrieval pipeline failed for {date}: {e}")
+        finally:
+            self._rm(filter_file)
 
 def retrieve_census_data(target_dir, table_list, level, base_url, year):
     '''
