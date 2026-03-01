@@ -21,6 +21,8 @@ dependencies:
   - seaborn
   - xagg
   - xarray
+  - duckdb
+  - pyarrow
   # Optional: ML tools
   # - scikit-learn
   # - torch
