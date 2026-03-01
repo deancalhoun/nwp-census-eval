@@ -48,8 +48,9 @@ CLIM_PATH = os.path.join(SCRATCH, "aggregated/era5_2t_county_climatology_1991_20
 SAVE_DIR = os.path.join(SCRATCH, "aggregated")
 
 START = "2016-01-01"
-END = "2024-12-31"
-FREQ = "12h"
+END = "2025-12-31"
+FC_FREQ = "12h"
+AN_FREQ = "6h"
 LEAD_TIMES = [0, 6, 12, 18, 24, 48, 72, 96, 120, 168, 240]
 VAR_NAME = "t2m"
 
@@ -422,8 +423,8 @@ def main(n_parallel: int = 1):
 
     # 1. Discover files
     logging.info("Building file lists ...")
-    fc_files = build_fc_files(FC_DIR, START, END, FREQ, LEAD_TIMES)
-    an_files = build_an_files(AN_DIR, START, END, FREQ)
+    fc_files = build_fc_files(FC_DIR, START, END, FC_FREQ, LEAD_TIMES)
+    an_files = build_an_files(AN_DIR, START, END, AN_FREQ)
     logging.info(f"Found {len(fc_files)} forecast files, {len(an_files)} analysis files")
 
     # 2. Align by valid_time
@@ -479,7 +480,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--start", default=START, help=f"Start date (default: {START})")
     parser.add_argument("--end", default=END, help=f"End date (default: {END})")
-    parser.add_argument("--freq", default=FREQ, help=f"Init-time frequency (default: {FREQ})")
+    parser.add_argument("--fc-freq", default=FC_FREQ, help=f"Init-time frequency (default: {FC_FREQ})")
+    parser.add_argument("--an-freq", default=AN_FREQ, help=f"Analysis valid-time frequency (default: {AN_FREQ})")
     parser.add_argument(
         "--lead-times", nargs="+", type=int, default=LEAD_TIMES,
         help=f"Lead times in hours (default: {LEAD_TIMES})",
@@ -501,7 +503,8 @@ if __name__ == "__main__":
 
     START = args.start
     END = args.end
-    FREQ = args.freq
+    FC_FREQ = args.fc_freq
+    AN_FREQ = args.an_freq
     LEAD_TIMES = args.lead_times
 
     main(n_parallel=args.n_parallel)
