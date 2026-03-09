@@ -58,8 +58,17 @@ class GeoAggregator:
             grid_path: path to a sample gridded data file to aggregate (str)
             coords: coordinate system of the data (str)
         '''
-        with xr.open_dataset(grid_path) as ds:
-            sample_datafile = ds.load().copy(deep=True)
+        # Allow either NetCDF-like files or GeoTIFFs for the sample grid.
+        ext = os.path.splitext(grid_path)[1].lower()
+        if ext in (".tif", ".tiff"):
+            da = xr.open_dataarray(grid_path)
+            # Ensure there is at least one data variable name
+            if da.name is None:
+                da = da.rename("var")
+            sample_datafile = da.to_dataset()
+        else:
+            with xr.open_dataset(grid_path) as ds:
+                sample_datafile = ds.load().copy(deep=True)
         # Pre-process for xagg: convert lon 0-360 to -180-180, add bounds (avoids read-only error in xagg.get_bnds)
         sample_datafile = fix_ds(sample_datafile)
         _add_writable_bnds(sample_datafile)
@@ -279,4 +288,196 @@ class AnalysisAggregator(GeoAggregator):
         self.an_data_table.to_csv(save_path)
 
 class CategoricalAggregator(GeoAggregator):
-    pass
+    """
+    Aggregates a categorical gridded field to polygons by computing, for each
+    polygon (and optional time), the top two categories and their percentages.
+
+    The output is a `pandas.DataFrame` with one row per polygon (and time, if
+    present) and four new columns:
+
+    - `category_1`: most frequent category
+    - `category_1_pct`: percentage of area covered by `category_1` (0–100)
+    - `category_2`: second most frequent category (or NaN if none)
+    - `category_2_pct`: percentage of area covered by `category_2` (0–100)
+    """
+
+    def __init__(
+        self,
+        shapefile_path: str,
+        categorical_file: str,
+        var_name: str,
+        coords: str = "WGS84",
+        silent: bool = True,
+    ):
+        """
+        Initialize from a shapefile and a sample categorical gridded file.
+
+        The categorical file is used to define the grid for building the
+        weightmap; any other categorical files passed to `aggregate` must
+        share this same grid.
+        """
+        super().__init__(shapefile_path, grid_path=categorical_file, coords=coords, silent=silent)
+        self.var_name = var_name
+
+    @classmethod
+    def from_GeoAggregator(cls, geo_aggregator: GeoAggregator, var_name: str) -> "CategoricalAggregator":
+        """
+        Construct a CategoricalAggregator that reuses an existing GeoAggregator's
+        grid, shapefile, and weightmap (no new weightmap computation).
+        """
+        instance = cls.__new__(cls)
+        # Inherit spatial state from the provided GeoAggregator
+        instance.shapefile_path = geo_aggregator.shapefile_path
+        instance.grid = geo_aggregator.grid
+        instance.shapefile = geo_aggregator.shapefile
+        instance.weightmap = geo_aggregator.weightmap
+        instance.latname = geo_aggregator.latname
+        instance.lonname = geo_aggregator.lonname
+        instance.coords = geo_aggregator.coords
+        instance.silent = geo_aggregator.silent
+        # Categorical-specific state
+        instance.var_name = var_name
+        return instance
+
+    def aggregate(self, datafile_path: str) -> pd.DataFrame:
+        """
+        Aggregate a categorical field from a gridded file to the polygons.
+
+        Parameters
+        ----------
+        datafile_path : str
+            Path to the gridded categorical data file to aggregate (NetCDF or GeoTIFF).
+
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame with polygon identifiers (and time, if present) and
+            four columns describing the top two categories and their
+            corresponding percentages.
+        """
+        # Load the dataset from NetCDF or GeoTIFF and ensure consistent lat/lon naming
+        ext = os.path.splitext(datafile_path)[1].lower()
+        if ext in (".tif", ".tiff"):
+            da_raw = xr.open_dataarray(datafile_path)
+            # Ensure the DataArray has the expected name so it becomes a
+            # variable with that name when converted to a Dataset.
+            if da_raw.name is None or da_raw.name != self.var_name:
+                da_raw = da_raw.rename(self.var_name)
+            ds = da_raw.to_dataset()
+        else:
+            with xr.open_dataset(datafile_path) as ds_in:
+                ds = ds_in.load().copy(deep=True)
+
+        ds = fix_ds(ds)
+
+        if self.var_name not in ds:
+            raise KeyError(f"Variable {self.var_name!r} not found in {datafile_path!r}")
+
+        da = ds[self.var_name]
+
+        # Support either 2D (lat, lon) or 3D (time, lat, lon) categorical fields.
+        # Any additional dimensions are not currently supported.
+        allowed_dims = {self.latname, self.lonname}
+        extra_dims = set(da.dims) - allowed_dims
+        # Allow a single time-like dimension (named "time", case-insensitive)
+        time_like_dims = {dim for dim in extra_dims if dim.lower() == "time"}
+        extra_dims = extra_dims - time_like_dims
+        if extra_dims:
+            raise ValueError(
+                f"CategoricalAggregator currently supports at most one extra "
+                f"time-like dimension in addition to ({self.latname}, {self.lonname}). "
+                f"Found unsupported extra dimensions: {sorted(extra_dims)}"
+            )
+
+        # Compute unique categories across the dataset, ignoring NaNs
+        values = da.values
+        flat = values.ravel()
+        # Mask out NaNs for numeric dtypes
+        if np.issubdtype(flat.dtype, np.number):
+            flat = flat[~np.isnan(flat)]
+        unique_cats = pd.unique(flat)
+        if len(unique_cats) == 0:
+            raise ValueError("No valid (non-NaN) categories found in the input data.")
+
+        # Build an indicator-variable dataset: one float field per category.
+        # Each indicator is 1 where the category is present, else 0.
+        indicator_ds = xr.Dataset()
+        for idx, cat in enumerate(unique_cats):
+            var = f"cat_{idx}"
+            indicator = (da == cat).astype(float)
+            indicator_ds[var] = indicator
+
+        # Aggregate the indicator variables using the precomputed weightmap.
+        # The mean of each indicator over a polygon is the area-weighted
+        # fraction of that polygon covered by the category.
+        aggregated = xagg.aggregate(indicator_ds, self.weightmap, silent=self.silent)
+
+        df = aggregated.to_dataframe().reset_index()
+
+        # Determine ID and time columns, if present
+        id_col = None
+        if "GEOID" in df.columns:
+            id_col = "GEOID"
+        elif "geo_id" in df.columns:
+            id_col = "geo_id"
+
+        time_col = None
+        for col in ("time", "valid_time"):
+            if col in df.columns:
+                time_col = col
+                break
+
+        cat_cols = [f"cat_{idx}" for idx in range(len(unique_cats))]
+
+        def _top_two(row: pd.Series) -> pd.Series:
+            vals = row[cat_cols].to_numpy(dtype=float)
+            # Handle rows with all-NaN or all-zero coverage
+            if np.all(np.isnan(vals)) or np.nansum(vals) == 0.0:
+                return pd.Series(
+                    {
+                        "category_1": np.nan,
+                        "category_1_pct": 0.0,
+                        "category_2": np.nan,
+                        "category_2_pct": 0.0,
+                    }
+                )
+
+            order = np.argsort(vals)[::-1]
+            first_idx = order[0]
+            second_idx = order[1] if len(order) > 1 else None
+
+            cat1 = unique_cats[first_idx]
+            pct1 = float(vals[first_idx]) * 100.0
+
+            if second_idx is not None and not np.isnan(vals[second_idx]) and vals[second_idx] > 0.0:
+                cat2 = unique_cats[second_idx]
+                pct2 = float(vals[second_idx]) * 100.0
+            else:
+                cat2 = np.nan
+                pct2 = 0.0
+
+            return pd.Series(
+                {
+                    "category_1": cat1,
+                    "category_1_pct": pct1,
+                    "category_2": cat2,
+                    "category_2_pct": pct2,
+                }
+            )
+
+        top_two_df = df.apply(_top_two, axis=1)
+
+        # Assemble the final DataFrame with identifier (and time, if present)
+        keep_cols = []
+        if id_col is not None:
+            keep_cols.append(id_col)
+        if time_col is not None:
+            keep_cols.append(time_col)
+
+        out = pd.concat([df[keep_cols].reset_index(drop=True), top_two_df], axis=1)
+
+        # Standardize geo identifier column name if possible
+        if id_col == "GEOID":
+            out = out.rename(columns={"GEOID": "geo_id"})
+
+        return out
