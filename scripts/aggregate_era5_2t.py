@@ -20,6 +20,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 import pandas as pd
 import xarray as xr
+import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from censuswxindex import aggregate as wxagg
@@ -36,10 +37,65 @@ SAVE_DIR = '/glade/derecho/scratch/dcalhoun/ecmwf/era5'
 START = '1991-01-01'
 END = '2020-12-31'
 PARAM = '2t'
-VAR_NAME = 't2m'  # or from ds.keys() - ERA5 may use t2m or VAR_2T
-
+VAR_NAME = 't2m'
 
 _WEIGHTMAP = None  # set in main(); inherited by workers when using fork
+
+# ---------------------------------------------------------------------------
+# Table-level metadata (sidecar JSON files)
+# ---------------------------------------------------------------------------
+TABLE_METADATA = {
+    "era5_2t_county": {
+        "description": f"ERA5 daily-mean 2m temperature aggregated to US counties ({START} to {END}, leap days excluded).",
+        "variables": {
+            "geo_id": {
+                "units": "1",
+                "long_name": "County FIPS code (string).",
+            },
+            "time": {
+                "units": "UTC",
+                "long_name": "Date of daily mean (valid time).",
+            },
+            VAR_NAME: {
+                "units": "K",
+                "long_name": "Daily-mean 2m air temperature from ERA5.",
+            },
+        },
+    },
+    "era5_2t_county_climatology": {
+        "description": "ERA5 2m temperature daily climatology aggregated to US counties for {START} to {END}, with all leap days (February 29) excluded from both the daily means and the climatology construction.",
+        "variables": {
+            "geo_id": {
+                "units": "1",
+                "long_name": "County FIPS code (string).",
+            },
+            "day_of_year": {
+                "units": "1",
+                "long_name": "Day of year (1–365) used for climatology.",
+            },
+            f"{VAR_NAME}_clim": {
+                "units": "K",
+                "long_name": "ERA5 2m temperature climatology at county level.",
+            },
+        },
+    },
+}
+
+
+def write_table_metadata(table_name: str, path: str) -> None:
+    """Write sidecar JSON metadata for a given table next to its parquet file."""
+    meta = TABLE_METADATA.get(table_name)
+    if meta is None:
+        logging.warning(f"No metadata definition found for table {table_name!r}; skipping metadata write")
+        return
+
+    base, _ = os.path.splitext(path)
+    meta_path = base + ".meta.json"
+    tmp_path = meta_path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(meta, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, meta_path)
+    logging.info("Wrote metadata for %s to %s", table_name, meta_path)
 
 
 def build_era5_files(era_dir, start, end, param):
@@ -164,6 +220,7 @@ def main(n_parallel: int = 1):
             # Update done_dates so resumed runs skip completed days
             done_dates.update(pd.to_datetime(df_month['time']).dt.strftime('%Y-%m-%d'))
             df_existing.to_parquet(era_path)
+            write_table_metadata("era5_2t_county", era_path)
             logging.info(f'Checkpoint: saved through {yr}-{mo:02d} ({len(df_existing)} days total)')
     else:
         # Parallel over months using a process pool. Weightmap is computed once in parent and inherited by workers.
@@ -193,6 +250,7 @@ def main(n_parallel: int = 1):
                     # Update done_dates and checkpoint after each completed month
                     done_dates.update(pd.to_datetime(df_month['time']).dt.strftime('%Y-%m-%d'))
                     df_existing.to_parquet(era_path)
+                    write_table_metadata("era5_2t_county", era_path)
                     logging.info(f'Checkpoint: saved through {yr}-{mo:02d} ({len(df_existing)} days total)')
 
     df_era = df_existing
@@ -208,6 +266,7 @@ def main(n_parallel: int = 1):
     # 5. Save climatology
     clim_path = os.path.join(SAVE_DIR, 'era5_2t_county_climatology_1991_2020.parquet')
     clim.to_parquet(clim_path)
+    write_table_metadata("era5_2t_county_climatology", clim_path)
     logging.info(f'Saved county climatology to {clim_path}')
 
 
