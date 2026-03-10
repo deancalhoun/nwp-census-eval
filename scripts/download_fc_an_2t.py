@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from censuswxindex.data import ECMWFDataClient
+from nwp_census_eval.data import ECMWFDataClient
 
 
 def _extend_end_date_for_analysis(end_str, lead_times):
