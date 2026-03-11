@@ -29,32 +29,31 @@ import pandas as pd
 import xarray as xr
 import geopandas as gpd
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from nwp_census_eval import aggregate as wxagg
 from nwp_census_eval.aggregate import _maybe_progress
 import xagg
+from config import (
+    SHAPEFILE_PATH,
+    IFS_FC_DIR  as FC_DIR,
+    AIFS_FC_DIR,
+    IFS_AN_DIR  as AN_DIR,
+    ERA5_CLIM_PATH as CLIM_PATH,
+    AGGREGATED_DIR as SAVE_DIR,
+    IFS_START   as START,
+    IFS_END     as END,
+    LEAD_TIMES,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-VERBOSE = True
-SCRATCH = "/glade/derecho/scratch/dcalhoun"
-SHAPEFILE_PATH = os.path.join(
-    SCRATCH, "census/shapefiles/nhgis0001_shapefile_tl2023_us_county_2023/US_county_2023.shp"
-)
-FC_DIR = os.path.join(SCRATCH, "ecmwf/ifs/fc/0.125/2t")
-AIFS_FC_DIR = os.path.join(SCRATCH, "ecmwf/aifs/fc/0.125/2t")
-AN_DIR = os.path.join(SCRATCH, "ecmwf/ifs/an/0.125/2t")
-CLIM_PATH = os.path.join(SCRATCH, "aggregated/era5_2t_county_climatology_1991_2020.parquet")
-SAVE_DIR = os.path.join(SCRATCH, "aggregated")
-
-START = "2016-01-01"
-END = "2025-12-31"
-FC_FREQ = "12h"
-AN_FREQ = "6h"
-LEAD_TIMES = [0, 6, 12, 18, 24, 36, 48, 60, 72, 84, 96, 108, 120, 168, 240]
+VERBOSE  = True
+FC_FREQ  = "12h"
+AN_FREQ  = "6h"
 VAR_NAME = "t2m"
 
 _WEIGHTMAP = None  # set in main(); inherited by workers when using fork

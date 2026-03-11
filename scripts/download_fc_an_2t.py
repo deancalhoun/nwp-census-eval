@@ -4,8 +4,15 @@ import argparse
 import logging
 from datetime import datetime, timedelta
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from nwp_census_eval.data import ECMWFDataClient
+from config import (
+    IFS_BASE_DIR, AIFS_BASE_DIR,
+    IFS_START, IFS_END, AIFS_START, AIFS_END,
+    PARAM, LEAD_TIMES, INIT_HOURS, CONUS_BOUNDS,
+    IFS_GRID, AIFS_GRID,
+)
 
 
 def _extend_end_date_for_analysis(end_str, lead_times):
@@ -77,65 +84,52 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    ## PARAMETERS
-    param = ("2t", "167.128")  # (shortName, param code)
-    lead_times = ["0", "6", "12", "18", "24", "36", "48", "60", "72", "84", "96", "108", "120", "168", "240"]
-    init_hours = ["0000", "1200"]
-    bounds = ["49.5", "-125", "24.5", "-66.5"]  # CONUS
+    param      = PARAM
+    lead_times = [str(lt) for lt in LEAD_TIMES]  # ECMWFDataClient expects strings
+    init_hours = INIT_HOURS
+    bounds     = CONUS_BOUNDS
 
     ### IFS FORECAST
-    base_dir = "/glade/derecho/scratch/dcalhoun/ecmwf/ifs"
-    grid = "0.125"
-    model = "ifs"
-    start = "2016-01-01"
-    end = "2025-12-31"
-
     # Forecast client uses the original end date
     fc_client = ECMWFDataClient(
-        base_dir=base_dir,
+        base_dir=IFS_BASE_DIR,
         param=param,
-        start=start,
-        end=end,
+        start=IFS_START,
+        end=IFS_END,
         lead_times=lead_times,
         init_hours=init_hours,
-        grid=grid,
-        model=model,
+        grid=IFS_GRID,
+        model="ifs",
         bounds=bounds,
         max_concurrent_requests=args.max_concurrent_requests,
     )
 
     # Analysis client extends the end date so that valid times beyond
     # the forecast cutoff (e.g., 10‑day leads from 2025‑12‑31) are covered.
-    an_end = _extend_end_date_for_analysis(end, lead_times)
+    an_end = _extend_end_date_for_analysis(IFS_END, lead_times)
     an_client = ECMWFDataClient(
-        base_dir=base_dir,
+        base_dir=IFS_BASE_DIR,
         param=param,
-        start=start,
+        start=IFS_START,
         end=an_end,
         lead_times=lead_times,
         init_hours=init_hours,
-        grid=grid,
-        model=model,
+        grid=IFS_GRID,
+        model="ifs",
         bounds=bounds,
         max_concurrent_requests=args.max_concurrent_requests,
     )
 
     ### AIFS FORECAST
-    base_dir = "/glade/derecho/scratch/dcalhoun/ecmwf/aifs"
-    grid = "0.25"
-    model = "aifs"
-    start = "2024-03-01"
-    end = "2025-12-31"
-
     client = ECMWFDataClient(
-        base_dir=base_dir,
+        base_dir=AIFS_BASE_DIR,
         param=param,
-        start=start,
-        end=end,
+        start=AIFS_START,
+        end=AIFS_END,
         lead_times=lead_times,
         init_hours=init_hours,
-        grid=grid,
-        model=model,
+        grid=AIFS_GRID,
+        model="aifs",
         bounds=bounds,
         max_concurrent_requests=args.max_concurrent_requests,
     )

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Human-centered NWP (Numerical Weather Prediction) model validation and benchmarking. Compares ECMWF IFS and AIFS 2m temperature forecasts against analyses, aggregated to U.S. census geographies (counties, tracts) and evaluated relative to ERA5 climatology. Designed to run on NCAR GLADE (Derecho HPC); data paths are hardcoded to `/glade/derecho/scratch/dcalhoun/`.
+Human-centered NWP (Numerical Weather Prediction) model validation and benchmarking. Compares ECMWF IFS and AIFS 2m temperature forecasts against analyses, aggregated to U.S. census geographies (counties, tracts) and evaluated relative to ERA5 climatology. Designed to run on NCAR GLADE (Derecho HPC); default data paths point to `/glade/derecho/scratch/dcalhoun/` (overrideable via `NWP_SCRATCH` env var).
 
 ## Environment Setup
 
@@ -22,18 +22,20 @@ Required environment variables:
 ## Running Scripts
 
 ```bash
-# Download ECMWF IFS/AIFS forecast and analysis data
+# Run the full pipeline in dependency order
+python scripts/run_pipeline.py
+
+# Run a subset of steps
+python scripts/run_pipeline.py --steps aggregate-era5 aggregate-fc
+
+# Pass extra flags to the last step (after --)
+python scripts/run_pipeline.py --steps aggregate-fc -- --n-parallel 8 --start 2024-01-01
+
+# Individual scripts (still runnable independently)
 python scripts/download_fc_an_2t.py [--max-concurrent-requests N] [--validate] [--verbose]
-
-# Download ACS census data
-python scripts/download_acs.py
-
-# Aggregate ERA5 to US counties and compute 1991-2020 climatology
 python scripts/aggregate_era5_2t.py [--n-parallel N]
-
-# Aggregate IFS/AIFS forecasts and analyses to counties; compute bias, errors, anomalies
-python scripts/aggregate_fc_an_2t.py [--start YYYY-MM-DD] [--end YYYY-MM-DD] \
-    [--n-parallel N] [--restore-fc-from-bias]
+python scripts/aggregate_fc_an_2t.py [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--n-parallel N]
+python scripts/download_acs.py [--year YYYY] [--level county|tract] [--out-dir PATH]
 ```
 
 ## Architecture
@@ -54,7 +56,13 @@ python scripts/aggregate_fc_an_2t.py [--start YYYY-MM-DD] [--end YYYY-MM-DD] \
 
 ### Scripts
 
-Scripts in `scripts/` use `sys.path.insert` to import from the repo root.
+Scripts in `scripts/` use `sys.path.insert` to import from both the repo root and `scripts/` dir.
+
+`scripts/config.py` — single source of truth for all paths and parameters. All paths derive from `SCRATCH` (default: `/glade/derecho/scratch/dcalhoun`; override via `NWP_SCRATCH` env var).
+
+`scripts/run_pipeline.py` — subprocess orchestrator; `--steps` for subsetting steps. Extra args after `--` are forwarded to the last requested step.
+
+**Note:** ERA5 parquets are written to `{SCRATCH}/aggregated/` (not `{SCRATCH}/ecmwf/era5/`). If existing ERA5 parquets are at the old path, move them to `{SCRATCH}/aggregated/` or re-run `aggregate_era5_2t.py` (checkpoint/resume will skip already-done months).
 
 `scripts/aggregate_fc_an_2t.py` is self-contained with its own file discovery (`build_fc_files`, `build_an_files`), alignment (`align_fc_an`), parallel processing (`ProcessPoolExecutor` with `fork` context to inherit the weightmap), and monthly checkpointing to parquet. Outputs include sidecar `.meta.json` files alongside each parquet.
 

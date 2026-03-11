@@ -1,22 +1,35 @@
 import os
 import sys
+import argparse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from nwp_census_eval.data import download_acs
+from config import ACS_DIR, ACS_YEAR, ACS_LEVEL, ACS_TABLES
 
-# Parameters
-acs_dir = '/glade/derecho/scratch/dcalhoun/census/data/acs_5yr_2023'
-acs_tables = [
-    'B01001', 'B01002', 'B02001', 'B03001', 'B15002', 'B15003',
-    'B17001', 'B19001', 'B19013', 'B23025', 'B25001', 'B25002',
-    'B25003', 'B25064', 'B25077'
-]
-year = 2023
-level = 'county'  # or 'tract'
 
-# Download and save
-df = download_acs(year=year, groups=acs_tables, level=level, estimate_only=True)
-os.makedirs(acs_dir, exist_ok=True)
-out_path = os.path.join(acs_dir, f'acs_5yr_{year}_{level}.parquet')
-df.to_parquet(out_path, index=False)
-print(f"Saved {len(df)} rows to {out_path}")
-print(df.head())
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Download ACS 5-year estimates from the Census Bureau API."
+    )
+    parser.add_argument("--year",    type=int, default=ACS_YEAR,
+                        help=f"ACS vintage year (default: {ACS_YEAR}).")
+    parser.add_argument("--level",   default=ACS_LEVEL, choices=["county", "tract"],
+                        help=f"Geographic level (default: {ACS_LEVEL}).")
+    parser.add_argument("--out-dir", default=None,
+                        help="Output directory (default: {ACS_DIR}/acs_5yr_{year}).")
+    args = parser.parse_args(argv)
+
+    out_dir  = args.out_dir or os.path.join(ACS_DIR, f"acs_5yr_{args.year}")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"acs_5yr_{args.year}_{args.level}.parquet")
+
+    df = download_acs(year=args.year, groups=ACS_TABLES, level=args.level, estimate_only=True)
+    df.to_parquet(out_path, index=False)
+    print(f"Saved {len(df):,} rows → {out_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

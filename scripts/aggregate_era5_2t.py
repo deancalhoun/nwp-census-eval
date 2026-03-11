@@ -22,21 +22,24 @@ import pandas as pd
 import xarray as xr
 import json
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from nwp_census_eval import aggregate as wxagg
 from nwp_census_eval.aggregate import _maybe_progress
 import xagg
+from config import (
+    ERA5_DIR        as ERA_DIR,
+    SHAPEFILE_PATH,
+    AGGREGATED_DIR  as SAVE_DIR,
+    ERA5_CLIM_START as START,
+    ERA5_CLIM_END   as END,
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Config ---
-VERBOSE = True  # progress bar / logging when True
-ERA_DIR = '/glade/derecho/scratch/dcalhoun/ecmwf/era5_2t/'  # copy of campaign 2t files
-SHAPEFILE_PATH = '/glade/derecho/scratch/dcalhoun/census/shapefiles/nhgis0001_shapefile_tl2023_us_county_2023/US_county_2023.shp'
-SAVE_DIR = '/glade/derecho/scratch/dcalhoun/ecmwf/era5'
-START = '1991-01-01'
-END = '2020-12-31'
-PARAM = '2t'
+VERBOSE  = True
+PARAM    = '2t'
 VAR_NAME = 't2m'
 
 _WEIGHTMAP = None  # set in main(); inherited by workers when using fork
