@@ -1,4 +1,4 @@
-name: censuswxindex
+name: nwp-census-eval
 channels:
   - conda-forge
   - nodefaults
@@ -23,6 +23,9 @@ dependencies:
   - xarray
   - duckdb
   - pyarrow
+  # Census data
+  - pip:
+    - censusdis
   # Optional: ML tools
   # - scikit-learn
   # - torch

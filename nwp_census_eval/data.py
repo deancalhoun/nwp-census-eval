@@ -3,10 +3,10 @@ import logging
 import subprocess
 import glob
 import re
-import requests
-import us
 import numpy as np
 import pandas as pd
+import geopandas as gpd
+import censusdis.data as ced
 from ecmwfapi import ECMWFService
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dateutil.relativedelta import relativedelta
@@ -577,200 +577,63 @@ class ECMWFDataClient:
         finally:
             self._rm(filter_file)
 
-def retrieve_census_data(target_dir, table_list, level, base_url, year):
-    '''
-    Download census data from the U.S. Census Bureau API.
-
-    This is a convenience wrapper around CensusDataClient that
-    downloads the raw CSVs and builds a cleaned, joined table of
-    estimate-only columns for the requested geographic level.
-
-    Inputs:
-        target_dir: parent directory to save data within (str)
-        table_list: list of census table codes to download (list of str)
-        level: geographic level of data to download (str: 'state', 'county', or 'tract')
-        base_url: base URL for the Census API (str)
-    Outputs:
-        pandas.DataFrame with the joined estimates table.
-    '''
-    client = CensusDataClient(base_dir=target_dir,
-                              table_list=table_list,
-                              level=level,
-                              base_url=base_url,
-                              year=year)
-    client.download()
-    df = client.build_joined_table()
+def _build_geo_id(df: pd.DataFrame, level: str) -> pd.DataFrame:
+    """Build a standardized geo_id FIPS column from Census geography components."""
+    if level == "county":
+        if "STATE" in df.columns and "COUNTY" in df.columns:
+            df = df.copy()
+            df["geo_id"] = df["STATE"].str.zfill(2) + df["COUNTY"].str.zfill(3)
+    elif level == "tract":
+        if "STATE" in df.columns and "COUNTY" in df.columns and "TRACT" in df.columns:
+            df = df.copy()
+            df["geo_id"] = (
+                df["STATE"].str.zfill(2)
+                + df["COUNTY"].str.zfill(3)
+                + df["TRACT"].str.zfill(6)
+            )
     return df
 
 
-class CensusDataClient:
-    def __init__(self, base_dir, table_list, level, base_url, year):
-        self.base_dir = base_dir
-        self.table_list = table_list
-        self.level = level
-        self.base_url = base_url
-        self.year = year
+def download_acs(
+    year: int,
+    groups: list[str],
+    level: str = "county",
+    state: str = "*",
+    estimate_only: bool = True,
+    with_geometry: bool = False,
+) -> pd.DataFrame | gpd.GeoDataFrame:
+    """Download ACS 5-year data via censusdis.
 
-        os.makedirs(self.base_dir, exist_ok=True)
+    Args:
+        year: ACS vintage year (e.g. 2023).
+        groups: List of ACS table codes (e.g. ["B01001", "B19013"]).
+        level: Geographic level — "county" or "tract".
+        state: State FIPS code string, or "*" for all states.
+        estimate_only: If True, keep only estimate columns (suffix "E").
+        with_geometry: If True, return a GeoDataFrame with polygon boundaries.
 
-        self.api_key = os.environ.get("CENSUS_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "Census API key not found. Please set the 'CENSUS_API_KEY' "
-                "environment variable. See https://api.census.gov/data/key_signup.html"
-            )
+    Returns:
+        DataFrame (or GeoDataFrame) with a standardized geo_id FIPS column.
+    """
+    geo_kwargs: dict = {"state": state}
+    if level in ("county", "tract"):
+        geo_kwargs["county"] = "*"
+    if level == "tract":
+        geo_kwargs["tract"] = "*"
 
-        if self.level not in ["state", "county", "tract"]:
-            raise ValueError("Invalid level specified. Choose from 'state', 'county', or 'tract'.")
-        if not isinstance(self.table_list, list) or not all(isinstance(t, str) for t in self.table_list):
-            raise ValueError("table_list must be a list of strings representing table codes.")
-        if not self.table_list:
-            raise ValueError("table_list cannot be empty. Please provide at least one table code.")
+    df = ced.download(
+        dataset="acs/acs5",
+        vintage=year,
+        group=groups,
+        with_geometry=with_geometry,
+        **geo_kwargs,
+    )
 
-        # Dictionary associating state FIPS codes and state abbreviations
-        self.fips_state_names = {x.fips: x.abbr for x in us.states.STATES}
+    if estimate_only:
+        geo_col_names = {"NAME", "STATE", "COUNTY", "TRACT", "geometry"}
+        geo_cols = [c for c in df.columns if c.upper() in geo_col_names or c in geo_col_names]
+        est_cols = [c for c in df.columns if c.upper().endswith("E") and c not in geo_cols]
+        df = df[geo_cols + est_cols]
 
-        # Will hold the joined, cleaned DataFrame once built
-        self.joined_df = None
-
-    def _build_params(self, table, state_code=None):
-        """Build API query parameters for a given table and (optionally) state."""
-        params = {
-            "get": f"group({table})",
-            "key": self.api_key,
-        }
-
-        if self.level == "state":
-            # One national request for all states
-            params["for"] = "state:*"
-        else:
-            if state_code is None:
-                raise ValueError("state_code must be provided for county and tract levels.")
-            params["for"] = f"{self.level}:*"
-            params["in"] = f"state:{state_code}"
-
-        return params
-
-    def _state_iter(self):
-        """Iterator over (state_code, state_name) for non-state levels."""
-        if self.level == "state":
-            yield None, "US"
-        else:
-            for code, name in self.fips_state_names.items():
-                yield code, name
-
-    def download(self):
-        """Download raw Census CSV files for all requested tables and levels."""
-        for state_code, state_name in self._state_iter():
-            if self.level == "state":
-                save_dir = os.path.join(self.base_dir, "state")
-            else:
-                save_dir = os.path.join(self.base_dir, self.level, state_name)
-            os.makedirs(save_dir, exist_ok=True)
-
-            for table in self.table_list:
-                if self.level == "state":
-                    outfile = os.path.join(
-                        save_dir,
-                        f"acs_5yr_{self.year}_state_{state_name}_{table}.csv",
-                    )
-                else:
-                    outfile = os.path.join(
-                        save_dir,
-                        f"acs_5yr_{self.year}_{self.level}_{state_name}_{table}.csv",
-                    )
-
-                if os.path.exists(outfile):
-                    logging.info(f"Skipping already downloaded data for {state_name}, table {table}")
-                    continue
-
-                params = self._build_params(table, state_code=state_code)
-                response = requests.get(self.base_url, params=params)
-                if response.status_code == 200:
-                    data = response.json()
-                    df = pd.DataFrame(data[1:], columns=data[0])
-                    df.to_csv(outfile, index=False)
-                else:
-                    logging.error(
-                        f"Error: {state_name}, table {table}, URL: {response.url}, "
-                        f"Status Code: {response.status_code}"
-                    )
-
-    def _load_table_dataframe(self, table):
-        """Load and clean a single table across all states for the configured level."""
-        dfs = []
-
-        for _, state_name in self._state_iter():
-            if self.level == "state":
-                path = os.path.join(
-                    self.base_dir,
-                    "state",
-                    f"acs_5yr_{self.year}_state_{state_name}_{table}.csv",
-                )
-            else:
-                path = os.path.join(
-                    self.base_dir,
-                    self.level,
-                    state_name,
-                    f"acs_5yr_{self.year}_{self.level}_{state_name}_{table}.csv",
-                )
-
-            if not os.path.exists(path):
-                logging.warning(f"Missing CSV for {state_name}, table {table}: {path}")
-                continue
-
-            df = pd.read_csv(path, dtype=str)
-
-            # Keep geography columns and estimate columns only
-            geo_cols = [c for c in df.columns if c in ["NAME", "state", "county", "tract"]]
-            estimate_cols = [c for c in df.columns if c.endswith("_E")]
-            keep_cols = geo_cols + estimate_cols
-            df = df[keep_cols]
-
-            dfs.append(df)
-
-        if not dfs:
-            raise RuntimeError(f"No data loaded for table {table}. Did you run download() first?")
-
-        combined = pd.concat(dfs, ignore_index=True)
-        return combined
-
-    def build_joined_table(self):
-        """Build a single joined DataFrame of estimate-only columns across all tables."""
-        if not self.table_list:
-            raise ValueError("No tables configured.")
-
-        # Start with the first table as the base
-        base_table = self.table_list[0]
-        base_df = self._load_table_dataframe(base_table)
-
-        # Determine geography join keys
-        join_keys = [c for c in ["state", "county", "tract"] if c in base_df.columns]
-
-        for table in self.table_list[1:]:
-            df = self._load_table_dataframe(table)
-
-            # Ensure we only keep non-duplicate geography/name columns when merging
-            drop_cols = [c for c in ["NAME"] if c in df.columns and c in base_df.columns]
-            df = df.drop(columns=drop_cols)
-
-            df = df.drop_duplicates(subset=join_keys)
-            base_df = base_df.drop_duplicates(subset=join_keys)
-
-            base_df = base_df.merge(df, on=join_keys, how="inner")
-
-        self.joined_df = base_df
-        return self.joined_df
-
-    def save_joined_table(self, path=None):
-        """Save the joined DataFrame to CSV."""
-        if self.joined_df is None:
-            raise RuntimeError("Joined table has not been built. Call build_joined_table() first.")
-
-        if path is None:
-            filename = f"acs_5yr_{self.year}_{self.level}_joined.csv"
-            path = os.path.join(self.base_dir, filename)
-
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.joined_df.to_csv(path, index=False)
-        logging.info(f"Saved joined census table to {path}")
+    df = _build_geo_id(df, level)
+    return df

@@ -23,8 +23,8 @@ import xarray as xr
 import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from censuswxindex import aggregate as wxagg
-from censuswxindex.aggregate import _maybe_progress
+from nwp_census_eval import aggregate as wxagg
+from nwp_census_eval.aggregate import _maybe_progress
 import xagg
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
