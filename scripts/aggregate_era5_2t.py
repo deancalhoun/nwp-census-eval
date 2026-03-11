@@ -4,10 +4,9 @@ Aggregate ERA5 to US counties (1991-2020), then compute per-county per-day-of-ye
 Workflow:
   1. Build list of (path, date) for ERA5 - monthly files, one entry per day
   2. Initialize GeoAggregator from one ERA5 file
-  3. For each day: read all hours, take daily mean, aggregate to counties
-  4. Save aggregated ERA5 table
-  5. Compute climatology: groupby(geo_id, day_of_year).mean()
-  6. Save county climatology
+  3. For each month (parallel or sequential): read daily means, aggregate to counties,
+     write per-month parquet atomically to era5_monthly/
+  4. Concatenate monthly parquets → full dataset + climatology
 """
 
 import os
@@ -42,7 +41,10 @@ VERBOSE  = True
 PARAM    = '2t'
 VAR_NAME = 't2m'
 
-_WEIGHTMAP = None  # set in main(); inherited by workers when using fork
+_WEIGHTMAP = None  # set in main(); inherited by forked workers
+
+# Per-month parquets are staged here to keep SAVE_DIR clean
+MONTHLY_DIR = os.path.join(SAVE_DIR, 'era5_monthly')
 
 # ---------------------------------------------------------------------------
 # Table-level metadata (sidecar JSON files)
@@ -66,7 +68,7 @@ TABLE_METADATA = {
         },
     },
     "era5_2t_county_climatology": {
-        "description": "ERA5 2m temperature daily climatology aggregated to US counties for {START} to {END}, with all leap days (February 29) excluded from both the daily means and the climatology construction.",
+        "description": f"ERA5 2m temperature daily climatology aggregated to US counties for {START} to {END}, with all leap days (February 29) excluded from both the daily means and the climatology construction.",
         "variables": {
             "geo_id": {
                 "units": "1",
@@ -89,9 +91,8 @@ def write_table_metadata(table_name: str, path: str) -> None:
     """Write sidecar JSON metadata for a given table next to its parquet file."""
     meta = TABLE_METADATA.get(table_name)
     if meta is None:
-        logging.warning(f"No metadata definition found for table {table_name!r}; skipping metadata write")
+        logging.warning("No metadata definition found for table %r; skipping", table_name)
         return
-
     base, _ = os.path.splitext(path)
     meta_path = base + ".meta.json"
     tmp_path = meta_path + ".tmp"
@@ -101,17 +102,49 @@ def write_table_metadata(table_name: str, path: str) -> None:
     logging.info("Wrote metadata for %s to %s", table_name, meta_path)
 
 
+# ---------------------------------------------------------------------------
+# Per-month checkpoint helpers
+# ---------------------------------------------------------------------------
+def _month_parquet_path(yr, mo):
+    return os.path.join(MONTHLY_DIR, f"era5_2t_county_{yr}_{mo:02d}.parquet")
+
+
+def _is_month_done(yr, mo):
+    """Return True if the month parquet exists and is readable."""
+    path = _month_parquet_path(yr, mo)
+    if not os.path.exists(path):
+        return False
+    try:
+        pd.read_parquet(path, columns=['geo_id'])
+        return True
+    except Exception:
+        logging.warning("Corrupt month checkpoint %s; will reprocess", path)
+        return False
+
+
+def _write_month_atomic(yr, mo, df):
+    """Write a month DataFrame to its parquet atomically via a .tmp file."""
+    path = _month_parquet_path(yr, mo)
+    tmp = path + ".tmp"
+    df.to_parquet(tmp)
+    os.replace(tmp, path)
+    logging.info("Checkpoint: %d-%02d saved (%d rows)", yr, mo, len(df))
+
+
+# ---------------------------------------------------------------------------
+# File discovery
+# ---------------------------------------------------------------------------
 def build_era5_files(era_dir, start, end, param):
     """
     Build list of (path, date) for ERA5.
-    ERA5 on GLADE: era_dir/{YYYYMM}/*{param}*.nc - monthly files with hourly data.
-    Returns one (path, date) per day.
+    ERA5 on GLADE: era_dir/{YYYYMM}/*{param}*.nc — monthly files with hourly data.
+    Returns one (path, date) per day; leap days excluded.
     """
     dates = pd.date_range(start=start, end=end, freq='D')
     files = []
     for date in dates:
         if date.month == 2 and date.day == 29:
-            continue  # skip leap days
+            continue
         path_pattern = os.path.join(era_dir, date.strftime('%Y%m'), f'*{param}*.nc')
         paths = glob.glob(path_pattern)
         if paths:
@@ -119,6 +152,9 @@ def build_era5_files(era_dir, start, end, param):
     return files
 
 
+# ---------------------------------------------------------------------------
+# Per-day aggregation
+# ---------------------------------------------------------------------------
 def aggregate_era5_day(path, date, weightmap, var_name):
     """
     For one day: read ERA5 file, take daily mean over hours, aggregate to counties.
@@ -127,150 +163,123 @@ def aggregate_era5_day(path, date, weightmap, var_name):
     with xr.open_dataset(path) as ds:
         ds_day = ds.sel(time=date.strftime('%Y-%m-%d'))
         ds_daily = ds_day.mean(dim='time', skipna=True)
-    ds_daily = xagg.fix_ds(ds_daily)  # convert lon to -180:180, rename to lat/lon (required by weightmap)
-    # ERA5 variable may be t2m, 2t, VAR_2T, etc.
+    ds_daily = xagg.fix_ds(ds_daily)
     var = var_name if var_name in ds_daily.data_vars else list(ds_daily.data_vars)[0]
-    aggregated = xagg.aggregate(ds_daily, weightmap, silent=True)  # per-day: keep quiet
-    df = aggregated.to_dataframe().dropna(subset=[var]).reset_index().drop(columns=['poly_idx']).rename(columns={'GEOID': 'geo_id'})
+    aggregated = xagg.aggregate(ds_daily, weightmap, silent=True)
+    df = (
+        aggregated.to_dataframe()
+        .dropna(subset=[var])
+        .reset_index()
+        .drop(columns=['poly_idx'])
+        .rename(columns={'GEOID': 'geo_id'})
+    )
     df['time'] = pd.to_datetime(date)
     return df[['geo_id', 'time', var]].rename(columns={var: var_name})
 
 
+# ---------------------------------------------------------------------------
+# Month-level worker
+# ---------------------------------------------------------------------------
 def _process_month(args):
     """
-    Helper for parallel processing: aggregate one (year, month) group.
-    Returns ((yr, mo), df_month) or ((yr, mo), None) if nothing new was done.
+    Aggregate one (year, month) group of ERA5 days.
+    Returns ((yr, mo), df_month) or ((yr, mo), None).
+    Relies on forked workers inheriting _WEIGHTMAP.
     """
-    (yr, mo), month_files, done_dates, position = args
+    (yr, mo), month_files, position = args
     if _WEIGHTMAP is None:
         raise RuntimeError("Worker has no weightmap; expected forked workers to inherit _WEIGHTMAP.")
 
-    month_results = []
-    # Per-month progress bar on its own line (position) so multiple workers are visible
+    results = []
     iterable = _maybe_progress(
-        month_files,
-        len(month_files),
-        f"{yr}-{mo:02d}",
-        silent=not VERBOSE,
-        position=position,
+        month_files, len(month_files), f"{yr}-{mo:02d}",
+        silent=not VERBOSE, position=position,
     )
     for path, date in iterable:
-        date_str = pd.to_datetime(date).normalize().strftime('%Y-%m-%d')
-        if date_str in done_dates:
-            continue
-        df_day = aggregate_era5_day(path, date, _WEIGHTMAP, VAR_NAME)
-        month_results.append(df_day)
+        results.append(aggregate_era5_day(path, date, _WEIGHTMAP, VAR_NAME))
 
-    if not month_results:
+    if not results:
         return (yr, mo), None
-
-    df_month = pd.concat(month_results, ignore_index=True)
-    return (yr, mo), df_month
+    return (yr, mo), pd.concat(results, ignore_index=True)
 
 
-def _chunked(seq, n):
-    """Yield successive n-sized chunks from a sequence."""
-    for i in range(0, len(seq), n):
-        yield seq[i:i + n]
-
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main(n_parallel: int = 1):
     os.makedirs(SAVE_DIR, exist_ok=True)
-    era_path = os.path.join(SAVE_DIR, 'era5_2t_county_1991_2020.parquet')
+    os.makedirs(MONTHLY_DIR, exist_ok=True)
 
-    # 1. Build ERA5 file list and group by month
+    # 1. Build file list and group by month
     era_files = build_era5_files(ERA_DIR, START, END, PARAM)
-    logging.info(f'Found {len(era_files)} days')
+    if not era_files:
+        logging.warning("No ERA5 files found; exiting")
+        return
+    logging.info("Found %d days", len(era_files))
 
-    # Load checkpoint if it exists
-    done_dates = set()
-    df_existing = None
-    if os.path.exists(era_path):
-        df_existing = pd.read_parquet(era_path)
-        done_dates = set(pd.to_datetime(df_existing['time']).dt.strftime('%Y-%m-%d'))
-        logging.info(f'Resuming: {len(done_dates)} days already in checkpoint')
-
-    # Group by (year, month) for checkpointing
     def month_key(item):
-        path, date = item
+        _, date = item
         return (date.year, date.month)
     months = [(k, list(g)) for k, g in groupby(era_files, month_key)]
 
-    # 2. Initialize grid path (weightmap source from first file)
-    grid_path = era_files[0][0]
+    # 2. Filter to months not yet checkpointed
+    pending = [(key, files) for key, files in months if not _is_month_done(*key)]
+    n_done = len(months) - len(pending)
+    logging.info("%d/%d months already done; %d pending", n_done, len(months), len(pending))
 
-    # 3. Aggregate each month, optionally in parallel, checkpoint after each
-    n_parallel = max(1, int(n_parallel))
-
-    if n_parallel == 1:
-        # Original sequential behavior (with progress bar), preserves existing checkpointing semantics
-        geo_agg = wxagg.GeoAggregator(shapefile_path=SHAPEFILE_PATH, grid_path=grid_path, silent=not VERBOSE)
-        weightmap = geo_agg.weightmap
-
-        for (yr, mo), month_files in months:
-            month_results = []
-            for path, date in _maybe_progress(month_files, len(month_files), f"{yr}-{mo:02d}", silent=not VERBOSE):
-                date_str = pd.to_datetime(date).normalize().strftime('%Y-%m-%d')
-                if date_str in done_dates:
-                    continue
-                df_day = aggregate_era5_day(path, date, weightmap, VAR_NAME)
-                month_results.append(df_day)
-
-            if not month_results:
-                continue
-            df_month = pd.concat(month_results, ignore_index=True)
-            df_existing = pd.concat([df_existing, df_month], ignore_index=True) if df_existing is not None else df_month
-            # Update done_dates so resumed runs skip completed days
-            done_dates.update(pd.to_datetime(df_month['time']).dt.strftime('%Y-%m-%d'))
-            df_existing.to_parquet(era_path)
-            write_table_metadata("era5_2t_county", era_path)
-            logging.info(f'Checkpoint: saved through {yr}-{mo:02d} ({len(df_existing)} days total)')
-    else:
-        # Parallel over months using a process pool. Weightmap is computed once in parent and inherited by workers.
-        logging.info(f'Running with up to {n_parallel} months in parallel')
+    # 3. Aggregate pending months (single code path for sequential and parallel)
+    if pending:
         global _WEIGHTMAP
-        if _WEIGHTMAP is None:
-            geo_agg = wxagg.GeoAggregator(shapefile_path=SHAPEFILE_PATH, grid_path=grid_path, silent=True)
-            _WEIGHTMAP = geo_agg.weightmap
+        _WEIGHTMAP = wxagg.GeoAggregator(
+            shapefile_path=SHAPEFILE_PATH, grid_path=era_files[0][0], silent=not VERBOSE
+        ).weightmap
 
-        # Use fork so workers inherit the precomputed weightmap without pickling.
-        with ProcessPoolExecutor(max_workers=n_parallel, mp_context=mp.get_context("fork")) as executor:
-            for batch in _chunked(months, n_parallel):
-                futures = []
-                for position, (key, month_files) in enumerate(batch):
-                    futures.append(
-                        executor.submit(
-                            _process_month,
-                            (key, month_files, done_dates, position),
-                        )
-                    )
+        n_parallel = max(1, int(n_parallel))
+        ctx = mp.get_context("fork")
+        with ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx) as executor:
+            futures = {
+                executor.submit(_process_month, (key, files, pos)): key
+                for pos, (key, files) in enumerate(pending)
+            }
+            for fut in as_completed(futures):
+                (yr, mo), df_month = fut.result()
+                if df_month is not None:
+                    _write_month_atomic(yr, mo, df_month)
 
-                for fut in as_completed(futures):
-                    (yr, mo), df_month = fut.result()
-                    if df_month is None:
-                        continue
-                    df_existing = pd.concat([df_existing, df_month], ignore_index=True) if df_existing is not None else df_month
-                    # Update done_dates and checkpoint after each completed month
-                    done_dates.update(pd.to_datetime(df_month['time']).dt.strftime('%Y-%m-%d'))
-                    df_existing.to_parquet(era_path)
-                    write_table_metadata("era5_2t_county", era_path)
-                    logging.info(f'Checkpoint: saved through {yr}-{mo:02d} ({len(df_existing)} days total)')
+    # 4. Concatenate all monthly parquets
+    monthly_dfs = []
+    for (yr, mo), _ in months:
+        path = _month_parquet_path(yr, mo)
+        if os.path.exists(path):
+            monthly_dfs.append(pd.read_parquet(path))
+        else:
+            logging.warning("Month %d-%02d parquet missing; excluded from outputs", yr, mo)
 
-    df_era = df_existing
-    if df_era is None:
-        logging.warning('No data aggregated')
+    if not monthly_dfs:
+        logging.warning("No monthly data; cannot produce outputs")
         return
 
-    # 4. Compute climatology: per county, per day-of-year
+    df_era = pd.concat(monthly_dfs, ignore_index=True)
+
+    # 5. Save full aggregated table atomically
+    era_path = os.path.join(SAVE_DIR, 'era5_2t_county_1991_2020.parquet')
+    tmp = era_path + ".tmp"
+    df_era.to_parquet(tmp)
+    os.replace(tmp, era_path)
+    write_table_metadata("era5_2t_county", era_path)
+    logging.info("Saved full ERA5 table (%d rows) to %s", len(df_era), era_path)
+
+    # 6. Compute and save climatology atomically
     df_era['day_of_year'] = pd.to_datetime(df_era['time']).dt.dayofyear
     clim = df_era.groupby(['geo_id', 'day_of_year'])[VAR_NAME].mean().reset_index()
     clim = clim.rename(columns={VAR_NAME: f'{VAR_NAME}_clim'})
 
-    # 5. Save climatology
     clim_path = os.path.join(SAVE_DIR, 'era5_2t_county_climatology_1991_2020.parquet')
-    clim.to_parquet(clim_path)
+    tmp = clim_path + ".tmp"
+    clim.to_parquet(tmp)
+    os.replace(tmp, clim_path)
     write_table_metadata("era5_2t_county_climatology", clim_path)
-    logging.info(f'Saved county climatology to {clim_path}')
+    logging.info("Saved climatology (%d rows) to %s", len(clim), clim_path)
 
 
 if __name__ == '__main__':
