@@ -24,7 +24,7 @@ SHAPEFILE_PATH = os.path.join(
     SCRATCH,
     "census/shapefiles/nhgis0003_shapefile_tl2024_us_county_2024/US_county_2024.shp",
 )
-ACS_DIR = os.path.join(SCRATCH, "census/data")
+ACS_DIR = os.path.join(SCRATCH, "census/data/acs5")
 
 # Aggregated output directory — ALL processed parquets go here, including ERA5 climatology
 AGGREGATED_DIR = os.path.join(SCRATCH, "aggregated")
