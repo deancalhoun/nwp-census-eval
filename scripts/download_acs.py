@@ -25,7 +25,7 @@ def main(argv=None):
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, f"acs_5yr_{args.year}_{args.level}.parquet")
 
-    df = download_acs(year=args.year, groups=ACS_TABLES, level=args.level, estimate_only=True)
+    df = download_acs(year=args.year, groups=ACS_TABLES, level=args.level, estimate_only=True, with_geometry=True)
     df.to_parquet(out_path, index=False)
     print(f"Saved {len(df):,} rows → {out_path}")
     return 0
