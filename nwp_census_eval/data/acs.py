@@ -1,3 +1,7 @@
+import pandas as pd
+import geopandas as gpd
+import censusdis.data as ced
+
 def _build_geo_id(df: pd.DataFrame, level: str) -> pd.DataFrame:
     """Build a standardized geo_id FIPS column from Census geography components."""
     if level == "county":
@@ -13,7 +17,6 @@ def _build_geo_id(df: pd.DataFrame, level: str) -> pd.DataFrame:
                 + df["TRACT"].str.zfill(6)
             )
     return df
-
 
 def download_acs(
     year: int,
