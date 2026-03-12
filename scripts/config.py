@@ -17,12 +17,12 @@ IFS_AN_DIR   = os.path.join(IFS_BASE_DIR,  "an/0.125/2t")
 AIFS_FC_DIR  = os.path.join(AIFS_BASE_DIR, "fc/0.25/2t")  # 0.25° grid
 
 # ERA5 raw input directory
-ERA5_DIR = os.path.join(SCRATCH, "ecmwf/era5_2t")
+ERA5_DIR = os.path.join(SCRATCH, "ecmwf/era5/era5_2t")
 
 # Census / shapefile paths
 SHAPEFILE_PATH = os.path.join(
     SCRATCH,
-    "census/shapefiles/nhgis0001_shapefile_tl2023_us_county_2023/US_county_2023.shp",
+    "census/shapefiles/nhgis0003_shapefile_tl2024_us_county_2024/US_county_2024.shp",
 )
 ACS_DIR = os.path.join(SCRATCH, "census/data")
 
@@ -50,7 +50,7 @@ IFS_GRID   = "0.125"
 AIFS_GRID  = "0.25"
 
 # ACS census defaults
-ACS_YEAR   = 2023
+ACS_YEAR   = 2024
 ACS_LEVEL  = "county"
 ACS_TABLES = [
     # Age structure — thermal vulnerability (% elderly 65+, % children <5)
