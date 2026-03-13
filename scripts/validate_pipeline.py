@@ -191,24 +191,31 @@ def check_acs():
 # ---------------------------------------------------------------------------
 # GRIB-format .nc file sweep
 # ---------------------------------------------------------------------------
-_GRIB_MAGIC = b"GRIB"
+_GRIB_MAGIC  = b"GRIB"
+_NC3_MAGIC   = (b"CDF\x01", b"CDF\x02")
+_HDF5_MAGIC  = b"\x89HDF"
 _SWEEP_WORKERS = 32  # I/O-bound; more threads = faster on parallel filesystems
 
 
-def _is_grib(path):
-    """Return True if the file starts with the GRIB magic bytes."""
+def _classify_file(path):
+    """Return 'ok', 'grib', or 'corrupt' based on the file's magic bytes."""
     try:
         with open(path, "rb") as f:
-            return f.read(4) == _GRIB_MAGIC
+            magic = f.read(4)
+        if magic == _GRIB_MAGIC:
+            return "grib"
+        if magic[:3] == b"CDF" or magic == _HDF5_MAGIC:
+            return "ok"
+        return "corrupt"
     except OSError:
-        return False
+        return "corrupt"
 
 
 def _scan_dir_parallel(directory):
-    """Return (nc_files, grib_files) for a directory tree using parallel I/O."""
+    """Return (n_total, grib_files, corrupt_files) for a directory tree."""
     nc_files = glob.glob(os.path.join(directory, "**", "*.nc"), recursive=True)
     if not nc_files:
-        return nc_files, []
+        return 0, [], []
 
     try:
         from tqdm import tqdm
@@ -217,25 +224,29 @@ def _scan_dir_parallel(directory):
     except ImportError:
         bar = None
 
-    grib_files = []
+    grib_files, corrupt_files = [], []
     with ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
-        futures = {pool.submit(_is_grib, p): p for p in nc_files}
+        futures = {pool.submit(_classify_file, p): p for p in nc_files}
         for fut in as_completed(futures):
-            if fut.result():
+            kind = fut.result()
+            if kind == "grib":
                 grib_files.append(futures[fut])
+            elif kind == "corrupt":
+                corrupt_files.append(futures[fut])
             if bar:
                 bar.update(1)
     if bar:
         bar.close()
-    return nc_files, grib_files
+    return len(nc_files), grib_files, corrupt_files
 
 
 def check_grib_nc_files(fix=False):
-    """Scan all .nc files in the IFS/AIFS directories for unconverted GRIB content.
+    """Scan all .nc files in the IFS/AIFS directories for format problems.
 
-    Reads only the first 4 bytes of each file (magic bytes check) using
-    32 threads in parallel — minimises per-file latency on networked filesystems.
-    If fix=True, runs grib_to_netcdf in-place on each bad file.
+    Reads only the first 4 bytes of each file (magic bytes) using 32 threads
+    in parallel. Detects both GRIB-format files (unconverted) and corrupt files
+    (neither NetCDF3/4 nor GRIB — e.g. truncated downloads).
+    If fix=True, runs grib_to_netcdf in-place on GRIB files.
     """
     dirs = {
         "IFS fc":  IFS_FC_DIR,
@@ -243,41 +254,48 @@ def check_grib_nc_files(fix=False):
         "AIFS fc": AIFS_FC_DIR,
     }
     results = []
-    total_grib = 0
     for label, directory in dirs.items():
         if not os.path.isdir(directory):
-            results.append(_status(f"{label} GRIB sweep", "SKIP",
+            results.append(_status(f"{label} file sweep", "SKIP",
                                    f"directory not found: {directory}"))
             continue
-        nc_files, grib_files = _scan_dir_parallel(directory)
-        n_nc, n_grib = len(nc_files), len(grib_files)
-        total_grib += n_grib
-        if n_grib == 0:
-            results.append(_status(f"{label} GRIB sweep", "OK",
-                                   f"{n_nc:,} .nc files checked — all valid NetCDF"))
-        else:
-            pct = 100 * n_grib / n_nc if n_nc else 0
-            detail = f"{n_grib:,}/{n_nc:,} files ({pct:.1f}%) are GRIB format"
-            if fix:
-                n_fixed, n_failed = 0, 0
-                for path in sorted(grib_files):
-                    tmp = path + ".converting"
-                    r = subprocess.run(["grib_to_netcdf", "-o", tmp, path],
-                                       capture_output=True)
-                    if r.returncode == 0 and os.path.exists(tmp):
-                        os.replace(tmp, path)
-                        n_fixed += 1
-                    else:
-                        n_failed += 1
-                        if os.path.exists(tmp):
-                            os.remove(tmp)
-                detail += f" | fixed {n_fixed:,}, failed {n_failed:,}"
-                status = "OK" if n_failed == 0 else "PARTIAL"
-            else:
-                detail += " — re-run with --fix-grib to convert in place"
-                status = "PARTIAL"
-            results.append(_status(f"{label} GRIB sweep", status, detail))
-    return results, total_grib
+        n_nc, grib_files, corrupt_files = _scan_dir_parallel(directory)
+        n_grib, n_corrupt = len(grib_files), len(corrupt_files)
+
+        if n_grib == 0 and n_corrupt == 0:
+            results.append(_status(f"{label} file sweep", "OK",
+                                   f"{n_nc:,} .nc files — all valid NetCDF"))
+            continue
+
+        parts = []
+        if n_grib:
+            pct = 100 * n_grib / n_nc
+            parts.append(f"{n_grib:,} GRIB ({pct:.1f}%)")
+        if n_corrupt:
+            pct = 100 * n_corrupt / n_nc
+            parts.append(f"{n_corrupt:,} corrupt ({pct:.1f}%)")
+        detail = f"{n_nc:,} files checked | bad: {', '.join(parts)}"
+
+        if fix and grib_files:
+            n_fixed, n_failed = 0, 0
+            for path in sorted(grib_files):
+                tmp = path + ".converting"
+                r = subprocess.run(["grib_to_netcdf", "-o", tmp, path],
+                                   capture_output=True)
+                if r.returncode == 0 and os.path.exists(tmp):
+                    os.replace(tmp, path)
+                    n_fixed += 1
+                else:
+                    n_failed += 1
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+            detail += f" | GRIB fixed {n_fixed:,}, failed {n_failed:,}"
+
+        if n_corrupt or (n_grib and not fix):
+            detail += " — corrupt files must be re-downloaded; GRIB: re-run with --fix-grib"
+        status = "PARTIAL" if (n_corrupt or (n_grib and not fix)) else "OK"
+        results.append(_status(f"{label} file sweep", status, detail))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -332,9 +350,8 @@ def main(argv=None):
     if status == "MISSING":
         any_missing = True
 
-    print("\n-- GRIB-format .nc file sweep --")
-    grib_results, total_grib = check_grib_nc_files(fix=args.fix_grib)
-    for msg, _ in grib_results:
+    print("\n-- .nc file format sweep --")
+    for msg, _ in check_grib_nc_files(fix=args.fix_grib):
         print(msg)
 
     print("\n-- IFS/AIFS downloads --")
