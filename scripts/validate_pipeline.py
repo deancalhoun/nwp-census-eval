@@ -127,20 +127,45 @@ def check_era5_climatology():
         return _status("ERA5 climatology", "MISSING", str(exc))
 
 
+def _check_monthly_dir(label, monthly_dir):
+    """Check a monthly-checkpoint directory; report parquet count."""
+    if not os.path.isdir(monthly_dir):
+        return _status(label, "MISSING", f"directory not found: {monthly_dir}")
+    parquets = glob.glob(os.path.join(monthly_dir, "*.parquet"))
+    n = len(parquets)
+    if n == 0:
+        return _status(label, "MISSING", f"no parquets in {monthly_dir}")
+    readable = sum(1 for p in parquets if _parquet_row_count(p) is not None)
+    if readable < n:
+        return _status(label, "PARTIAL",
+                       f"{readable}/{n} parquets readable in {monthly_dir}")
+    return _status(label, "OK", f"{n:,} monthly parquets — {monthly_dir}")
+
+
 def check_aggregation_outputs():
-    files = {
-        "IFS forecast":         "ifs_fc_2t_county.parquet",
-        "IFS analysis":         "ifs_an_2t_county.parquet",
-        "IFS bias":             "ifs_fc_bias_2t_county.parquet",
-        "IFS bias+anom":        "ifs_fc_bias_anom_2t_county.parquet",
-        "AIFS forecast":        "aifs_fc_2t_county.parquet",
-        "AIFS bias":            "aifs_fc_bias_2t_county.parquet",
-        "AIFS bias+anom":       "aifs_fc_bias_anom_2t_county.parquet",
-        "AIFS vs IFS":          "aifs_vs_ifs_fc_bias_comparison_2t_county.parquet",
-    }
     results = []
     any_missing = False
-    for label, fname in files.items():
+
+    # Raw aggregation outputs (monthly checkpoint parquets)
+    for label, subdir in [
+        ("IFS forecast (monthly)", "ifs_fc_monthly"),
+        ("IFS analysis (monthly)", "ifs_an_monthly"),
+        ("AIFS forecast (monthly)", "aifs_fc_monthly"),
+    ]:
+        msg, status = _check_monthly_dir(label, os.path.join(AGGREGATED_DIR, subdir))
+        results.append((msg, status))
+        if status == "MISSING":
+            any_missing = True
+
+    # Derived outputs (single parquets written by compute_derived_2t.py)
+    derived = {
+        "IFS bias":     "ifs_fc_bias_2t_county.parquet",
+        "IFS bias+anom": "ifs_fc_bias_anom_2t_county.parquet",
+        "AIFS bias":    "aifs_fc_bias_2t_county.parquet",
+        "AIFS bias+anom": "aifs_fc_bias_anom_2t_county.parquet",
+        "AIFS vs IFS":  "aifs_vs_ifs_fc_bias_comparison_2t_county.parquet",
+    }
+    for label, fname in derived.items():
         path = os.path.join(AGGREGATED_DIR, fname)
         if not os.path.exists(path):
             results.append(_status(label, "MISSING", path))
@@ -151,7 +176,6 @@ def check_aggregation_outputs():
                 results.append(_status(label, "MISSING", f"unreadable: {path}"))
                 any_missing = True
             else:
-                # Try to get date range from valid_time or time column
                 for col in ("valid_time", "time"):
                     names = _parquet_schema_names(path) or set()
                     if col in names:
@@ -161,6 +185,7 @@ def check_aggregation_outputs():
                             break
                 else:
                     results.append(_status(label, "OK", f"{rows:,} rows"))
+
     return results, any_missing
 
 

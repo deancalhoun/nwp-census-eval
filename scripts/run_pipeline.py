@@ -2,10 +2,13 @@
 scripts/run_pipeline.py — Unified pipeline entry point.
 
 Steps (in dependency order):
-  download       download_fc_an_2t.py  — ECMWF IFS/AIFS forecast + analysis data
-  aggregate-era5 aggregate_era5_2t.py  — ERA5 county aggregation + climatology
-  aggregate-fc   aggregate_fc_an_2t.py — IFS/AIFS aggregation + bias/anomalies
-  acs            download_acs.py       — Census ACS data
+  download        download_fc_an_2t.py   — ECMWF IFS/AIFS forecast + analysis data
+  aggregate-era5  aggregate_era5_2t.py   — ERA5 county aggregation + climatology
+  aggregate-fc    aggregate_fc_an_2t.py  — IFS/AIFS raw spatial aggregation (monthly parquets)
+  compute-derived compute_derived_2t.py  — bias, anomaly, and comparison tables
+  koppen          aggregate_koppen.py    — Koppen-Geiger county classification
+  acs             download_acs.py        — Census ACS data
+  validate        validate_pipeline.py   — pipeline status report
 
 Usage:
   python scripts/run_pipeline.py                         # all steps
@@ -19,12 +22,13 @@ import sys
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 STEPS = [
-    ("download",       "download_fc_an_2t.py"),
-    ("aggregate-era5", "aggregate_era5_2t.py"),
-    ("aggregate-fc",   "aggregate_fc_an_2t.py"),
-    ("koppen",         "aggregate_koppen.py"),
-    ("acs",            "download_acs.py"),
-    ("validate",       "validate_pipeline.py"),
+    ("download",        "download_fc_an_2t.py"),
+    ("aggregate-era5",  "aggregate_era5_2t.py"),
+    ("aggregate-fc",    "aggregate_fc_an_2t.py"),
+    ("compute-derived", "compute_derived_2t.py"),
+    ("koppen",          "aggregate_koppen.py"),
+    ("acs",             "download_acs.py"),
+    ("validate",        "validate_pipeline.py"),
 ]
 STEP_NAMES = [s[0] for s in STEPS]
 STEP_MAP   = dict(STEPS)
