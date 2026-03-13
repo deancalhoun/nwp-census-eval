@@ -6,18 +6,21 @@ Workflow:
   2. Initialize GeoAggregator from one ERA5 file
   3. For each month (parallel or sequential): read daily means, aggregate to counties,
      write per-month parquet atomically to era5_monthly/
-  4. Concatenate monthly parquets → full dataset + climatology
+  4. Compute climatology incrementally (one month at a time) — no full concat
+  5. Optionally write full consolidated table via --write-full-table
 """
 
 import os
 import sys
 import glob
+import time
 from itertools import groupby
 import logging
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 import pandas as pd
+import pyarrow.parquet as pq
 import xarray as xr
 import json
 
@@ -132,6 +135,32 @@ def _write_month_atomic(yr, mo, df):
 
 
 # ---------------------------------------------------------------------------
+# Climatology guard
+# ---------------------------------------------------------------------------
+def _clim_is_valid(clim_path: str) -> bool:
+    """Return True if the climatology parquet exists and has the expected structure."""
+    if not os.path.exists(clim_path):
+        return False
+    try:
+        meta = pq.read_metadata(clim_path)
+        schema = meta.schema.to_arrow_schema()
+        names = set(schema.names)
+        required = {f"{VAR_NAME}_clim", "geo_id", "day_of_year"}
+        if not required.issubset(names):
+            logging.warning("Climatology parquet missing columns %s; will recompute", required - names)
+            return False
+        df_doy = pq.read_table(clim_path, columns=["day_of_year"]).to_pandas()
+        n_doys = df_doy["day_of_year"].nunique()
+        if n_doys != 365:
+            logging.warning("Climatology has %d unique DOYs (expected 365); will recompute", n_doys)
+            return False
+        return True
+    except Exception as exc:
+        logging.warning("Cannot read climatology parquet (%s); will recompute", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # File discovery
 # ---------------------------------------------------------------------------
 def build_era5_files(era_dir, start, end, param):
@@ -204,18 +233,100 @@ def _process_month(args):
 
 
 # ---------------------------------------------------------------------------
+# Incremental climatology
+# ---------------------------------------------------------------------------
+def _compute_clim_incremental(months):
+    """
+    Compute climatology by reading one monthly parquet at a time.
+    Peak memory = one month + two small Series (~18 MB for 3,100 counties × 365 DOYs).
+    """
+    t0 = time.time()
+    acc_sum, acc_cnt = None, None
+    n_months = len(months)
+    for i, ((yr, mo), _) in enumerate(months, 1):
+        path = _month_parquet_path(yr, mo)
+        if not os.path.exists(path):
+            logging.warning("Month %d-%02d parquet missing; excluded from climatology", yr, mo)
+            continue
+        df = pd.read_parquet(path)
+        df['day_of_year'] = pd.to_datetime(df['time']).dt.dayofyear
+        grp = df.groupby(['geo_id', 'day_of_year'])[VAR_NAME]
+        s = grp.sum()
+        c = grp.count()
+        acc_sum = s if acc_sum is None else acc_sum.add(s, fill_value=0)
+        acc_cnt = c if acc_cnt is None else acc_cnt.add(c, fill_value=0)
+        if i % 12 == 0 or i == n_months:
+            logging.info("[%.0fs] Climatology accumulation: %d/%d months", time.time() - t0, i, n_months)
+    if acc_sum is None:
+        return None
+    clim = (acc_sum / acc_cnt).rename(f'{VAR_NAME}_clim').reset_index()
+    logging.info("[%.0fs] Climatology computed (%d rows)", time.time() - t0, len(clim))
+    return clim
+
+
+# ---------------------------------------------------------------------------
+# Optional full-table streaming writer
+# ---------------------------------------------------------------------------
+def _write_full_table_streaming(months, era_path):
+    """
+    Stream all monthly parquets into one consolidated parquet without loading
+    more than one month at a time. Atomic rename at end. Casts each table to
+    the schema of the first to avoid dtype mismatches across months.
+    """
+    import pyarrow as pa  # noqa: F401
+    t0 = time.time()
+    tmp = era_path + ".tmp"
+    writer = None
+    schema = None
+    total_rows = 0
+    for (yr, mo), _ in months:
+        path = _month_parquet_path(yr, mo)
+        if not os.path.exists(path):
+            logging.warning("Month %d-%02d parquet missing; excluded from full table", yr, mo)
+            continue
+        table = pq.read_table(path)
+        if schema is None:
+            schema = table.schema
+            writer = pq.ParquetWriter(tmp, schema)
+        else:
+            table = table.cast(schema)
+        writer.write_table(table)
+        total_rows += len(table)
+    if writer is not None:
+        writer.close()
+        os.replace(tmp, era_path)
+        write_table_metadata("era5_2t_county", era_path)
+        logging.info("[%.0fs] Saved full ERA5 table (%d rows) to %s", time.time() - t0, total_rows, era_path)
+    else:
+        logging.warning("No monthly data; full table not written")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main(n_parallel: int = 1):
+def main(n_parallel: int = 1, write_full_table: bool = False):
+    t_start = time.time()
+    logging.info("=== aggregate_era5_2t.py | start %s ===", time.strftime("%Y-%m-%d %H:%M:%S"))
     os.makedirs(SAVE_DIR, exist_ok=True)
     os.makedirs(MONTHLY_DIR, exist_ok=True)
+
+    clim_path = os.path.join(SAVE_DIR, 'era5_2t_county_climatology_1991_2020.parquet')
+
+    # 0. Early exit if climatology already valid and full table not requested
+    if not write_full_table and _clim_is_valid(clim_path):
+        logging.info("Climatology already valid at %s; nothing to do.", clim_path)
+        return
 
     # 1. Build file list and group by month
     era_files = build_era5_files(ERA_DIR, START, END, PARAM)
     if not era_files:
         logging.warning("No ERA5 files found; exiting")
         return
-    logging.info("Found %d days", len(era_files))
+    dates = [d for _, d in era_files]
+    logging.info(
+        "Found %d days | %s to %s",
+        len(era_files), dates[0].strftime("%Y-%m-%d"), dates[-1].strftime("%Y-%m-%d"),
+    )
 
     def month_key(item):
         _, date = item
@@ -225,7 +336,12 @@ def main(n_parallel: int = 1):
     # 2. Filter to months not yet checkpointed
     pending = [(key, files) for key, files in months if not _is_month_done(*key)]
     n_done = len(months) - len(pending)
-    logging.info("%d/%d months already done; %d pending", n_done, len(months), len(pending))
+    logging.info(
+        "Months: %d total | %d done | %d pending | range %d-%02d to %d-%02d",
+        len(months), n_done, len(pending),
+        months[0][0][0], months[0][0][1],
+        months[-1][0][0], months[-1][0][1],
+    )
 
     # 3. Aggregate pending months (single code path for sequential and parallel)
     if pending:
@@ -236,6 +352,7 @@ def main(n_parallel: int = 1):
 
         n_parallel = max(1, int(n_parallel))
         ctx = mp.get_context("fork")
+        t_agg = time.time()
         with ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx) as executor:
             futures = {
                 executor.submit(_process_month, (key, files, pos)): key
@@ -245,41 +362,26 @@ def main(n_parallel: int = 1):
                 (yr, mo), df_month = fut.result()
                 if df_month is not None:
                     _write_month_atomic(yr, mo, df_month)
+        logging.info("[%.0fs] Aggregation phase complete", time.time() - t_agg)
 
-    # 4. Concatenate all monthly parquets
-    monthly_dfs = []
-    for (yr, mo), _ in months:
-        path = _month_parquet_path(yr, mo)
-        if os.path.exists(path):
-            monthly_dfs.append(pd.read_parquet(path))
-        else:
-            logging.warning("Month %d-%02d parquet missing; excluded from outputs", yr, mo)
-
-    if not monthly_dfs:
-        logging.warning("No monthly data; cannot produce outputs")
+    # 4. Compute climatology incrementally
+    t_clim = time.time()
+    clim = _compute_clim_incremental(months)
+    if clim is None:
+        logging.warning("No monthly data; cannot produce climatology")
         return
-
-    df_era = pd.concat(monthly_dfs, ignore_index=True)
-
-    # 5. Save full aggregated table atomically
-    era_path = os.path.join(SAVE_DIR, 'era5_2t_county_1991_2020.parquet')
-    tmp = era_path + ".tmp"
-    df_era.to_parquet(tmp)
-    os.replace(tmp, era_path)
-    write_table_metadata("era5_2t_county", era_path)
-    logging.info("Saved full ERA5 table (%d rows) to %s", len(df_era), era_path)
-
-    # 6. Compute and save climatology atomically
-    df_era['day_of_year'] = pd.to_datetime(df_era['time']).dt.dayofyear
-    clim = df_era.groupby(['geo_id', 'day_of_year'])[VAR_NAME].mean().reset_index()
-    clim = clim.rename(columns={VAR_NAME: f'{VAR_NAME}_clim'})
-
-    clim_path = os.path.join(SAVE_DIR, 'era5_2t_county_climatology_1991_2020.parquet')
     tmp = clim_path + ".tmp"
     clim.to_parquet(tmp)
     os.replace(tmp, clim_path)
     write_table_metadata("era5_2t_county_climatology", clim_path)
-    logging.info("Saved climatology (%d rows) to %s", len(clim), clim_path)
+    logging.info("[%.0fs] Saved climatology (%d rows) to %s", time.time() - t_clim, len(clim), clim_path)
+
+    # 5. Optionally write full consolidated table
+    if write_full_table:
+        era_path = os.path.join(SAVE_DIR, 'era5_2t_county_1991_2020.parquet')
+        _write_full_table_streaming(months, era_path)
+
+    logging.info("[%.0fs] Done.", time.time() - t_start)
 
 
 if __name__ == '__main__':
@@ -290,5 +392,11 @@ if __name__ == '__main__':
         default=1,
         help='Number of months to process simultaneously (default: 1).',
     )
+    parser.add_argument(
+        '--write-full-table',
+        action='store_true',
+        default=False,
+        help='Also write the full concatenated ERA5 table (default: off; monthly parquets remain queryable via DuckDB).',
+    )
     args = parser.parse_args()
-    main(n_parallel=args.n_parallel)
+    main(n_parallel=args.n_parallel, write_full_table=args.write_full_table)

@@ -26,6 +26,9 @@ SHAPEFILE_PATH = os.path.join(
 )
 ACS_DIR = os.path.join(SCRATCH, "census/data/acs5")
 
+# Koppen-Geiger climate classification GeoTIFF
+KOPPEN_PATH = os.path.join(SCRATCH, "koppen_geiger/1991_2020/koppen_geiger_0p5.tif")
+
 # Aggregated output directory — ALL processed parquets go here, including ERA5 climatology
 AGGREGATED_DIR = os.path.join(SCRATCH, "aggregated")
 ERA5_CLIM_PATH = os.path.join(
