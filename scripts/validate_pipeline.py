@@ -234,7 +234,9 @@ def main(argv=None):
         print(_status("IFS/AIFS downloads", "SKIP", "--skip-download-check specified")[0])
     else:
         try:
-            from download_fc_an_2t import _validate_forecast, _validate_analysis  # noqa: F401
+            from download_fc_an_2t import (
+                _validate_forecast, _validate_analysis, _extend_end_date_for_analysis,
+            )
             from nwp_census_eval.data import ECMWFDataClient
             from config import (
                 IFS_BASE_DIR, AIFS_BASE_DIR,
@@ -243,19 +245,29 @@ def main(argv=None):
                 IFS_GRID, AIFS_GRID,
             )
             lead_str = [str(lt) for lt in LEAD_TIMES]
+            # IFS forecast
             fc_client = ECMWFDataClient(
                 base_dir=IFS_BASE_DIR, param=PARAM, start=IFS_START, end=IFS_END,
                 lead_times=lead_str, init_hours=INIT_HOURS, grid=IFS_GRID,
                 model="ifs", bounds=CONUS_BOUNDS, max_concurrent_requests=1,
             )
             ok_fc = _validate_forecast(fc_client, "IFS")
+            # IFS analysis — end date extended to cover max lead time valid times
+            an_end = _extend_end_date_for_analysis(IFS_END, lead_str)
+            an_client = ECMWFDataClient(
+                base_dir=IFS_BASE_DIR, param=PARAM, start=IFS_START, end=an_end,
+                lead_times=lead_str, init_hours=INIT_HOURS, grid=IFS_GRID,
+                model="ifs", bounds=CONUS_BOUNDS, max_concurrent_requests=1,
+            )
+            ok_an = _validate_analysis(an_client, "IFS")
+            # AIFS forecast
             aifs_client = ECMWFDataClient(
                 base_dir=AIFS_BASE_DIR, param=PARAM, start=AIFS_START, end=AIFS_END,
                 lead_times=lead_str, init_hours=INIT_HOURS, grid=AIFS_GRID,
                 model="aifs", bounds=CONUS_BOUNDS, max_concurrent_requests=1,
             )
             ok_aifs = _validate_forecast(aifs_client, "AIFS")
-            if ok_fc and ok_aifs:
+            if ok_fc and ok_an and ok_aifs:
                 print(_status("IFS/AIFS downloads", "OK")[0])
             else:
                 print(_status("IFS/AIFS downloads", "PARTIAL", "see above for details")[0])
