@@ -241,21 +241,24 @@ def _compute_clim_incremental(months):
     acc_sum, acc_cnt = None, None
     try:
         from tqdm import tqdm as _tqdm
-        bar = _tqdm(months, total=len(months), desc="Climatology", unit="mo")
+        from tqdm.contrib.logging import logging_redirect_tqdm
     except ImportError:
-        bar = months
-    for (yr, mo), _ in bar:
-        path = _month_parquet_path(yr, mo)
-        if not os.path.exists(path):
-            logging.warning("Month %d-%02d parquet missing; excluded from climatology", yr, mo)
-            continue
-        df = pd.read_parquet(path)
-        df['day_of_year'] = pd.to_datetime(df['time']).dt.dayofyear
-        grp = df.groupby(['geo_id', 'day_of_year'])[VAR_NAME]
-        s = grp.sum()
-        c = grp.count()
-        acc_sum = s if acc_sum is None else acc_sum.add(s, fill_value=0)
-        acc_cnt = c if acc_cnt is None else acc_cnt.add(c, fill_value=0)
+        _tqdm = None
+        from contextlib import nullcontext as logging_redirect_tqdm
+    bar = _tqdm(months, total=len(months), desc="Climatology", unit="mo") if _tqdm else months
+    with logging_redirect_tqdm():
+        for (yr, mo), _ in bar:
+            path = _month_parquet_path(yr, mo)
+            if not os.path.exists(path):
+                logging.warning("Month %d-%02d parquet missing; excluded from climatology", yr, mo)
+                continue
+            df = pd.read_parquet(path)
+            df['day_of_year'] = pd.to_datetime(df['time']).dt.dayofyear
+            grp = df.groupby(['geo_id', 'day_of_year'])[VAR_NAME]
+            s = grp.sum()
+            c = grp.count()
+            acc_sum = s if acc_sum is None else acc_sum.add(s, fill_value=0)
+            acc_cnt = c if acc_cnt is None else acc_cnt.add(c, fill_value=0)
     if acc_sum is None:
         return None
     clim = (acc_sum / acc_cnt).rename(f'{VAR_NAME}_clim').reset_index()
@@ -354,21 +357,24 @@ def main(n_parallel: int = 1, write_full_table: bool = False):
         t_agg = time.time()
         try:
             from tqdm import tqdm as _tqdm
-            bar = _tqdm(total=len(pending), desc="ERA5 months", unit="mo")
+            from tqdm.contrib.logging import logging_redirect_tqdm
         except ImportError:
-            bar = None
+            _tqdm = None
+            from contextlib import nullcontext as logging_redirect_tqdm
+        bar = _tqdm(total=len(pending), desc="ERA5 months", unit="mo") if _tqdm else None
         executor = ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx)
         try:
-            futures = {
-                executor.submit(_process_month, (key, files)): key
-                for key, files in pending
-            }
-            for fut in as_completed(futures):
-                (yr, mo), df_month = fut.result()
-                if df_month is not None:
-                    _write_month_atomic(yr, mo, df_month)
-                if bar:
-                    bar.update(1)
+            with logging_redirect_tqdm():
+                futures = {
+                    executor.submit(_process_month, (key, files)): key
+                    for key, files in pending
+                }
+                for fut in as_completed(futures):
+                    (yr, mo), df_month = fut.result()
+                    if df_month is not None:
+                        _write_month_atomic(yr, mo, df_month)
+                    if bar:
+                        bar.update(1)
         except KeyboardInterrupt:
             logging.warning("Interrupted — shutting down workers (completed months are checkpointed).")
             executor.shutdown(wait=False, cancel_futures=True)
