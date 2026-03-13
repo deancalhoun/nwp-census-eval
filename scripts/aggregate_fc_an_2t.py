@@ -20,6 +20,7 @@ import glob
 import logging
 import argparse
 import json
+import time
 from itertools import groupby
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
@@ -447,11 +448,7 @@ def _process_fc_chunk(args):
         raise RuntimeError("Worker has no weightmap; expected forked workers to inherit _WEIGHTMAP.")
 
     results = []
-    iterable = _maybe_progress(
-        chunk_files, len(chunk_files), f"FC lead={lead}h {yr}-{mo:02d}",
-        silent=not VERBOSE, position=position,
-    )
-    for path, init_time, lead_time in iterable:
+    for path, init_time, lead_time in chunk_files:
         key = _fc_checkpoint_key(init_time, lead_time)
         if key in done_keys:
             continue
@@ -471,11 +468,7 @@ def _process_an_month(args):
         raise RuntimeError("Worker has no weightmap; expected forked workers to inherit _WEIGHTMAP.")
 
     results = []
-    iterable = _maybe_progress(
-        month_files, len(month_files), f"AN {yr}-{mo:02d}",
-        silent=not VERBOSE, position=position,
-    )
-    for path, time in iterable:
+    for path, time in month_files:
         t_str = pd.to_datetime(time).strftime("%Y-%m-%d %H:%M:%S")
         if t_str in done_times:
             continue
@@ -651,27 +644,37 @@ def _run_all(all_chunks, fc_save_path, an_save_path, n_parallel):
         os.rename(tmp_path, st["path"])
         logging.info(f"{st['label']} checkpoint: saved {group_key} ({len(st['df'])} rows total)")
 
+    try:
+        from tqdm import tqdm as _tqdm
+        bar = _tqdm(total=len(all_chunks), desc="FC+AN chunks", unit="chunk")
+    except ImportError:
+        bar = None
+
     if n_parallel == 1:
         for tag, group_key, chunk_files in all_chunks:
             _, gk, df_chunk = _process_chunk((tag, group_key, chunk_files, states[tag]["done"], None))
             _handle_result(tag, gk, df_chunk)
+            if bar:
+                bar.update(1)
     else:
         logging.info(f"Running with up to {n_parallel} workers (fc + an shared pool)")
         ctx = mp.get_context("fork")
         with ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx) as executor:
-            for batch in _chunked(all_chunks, n_parallel):
-                futures = []
-                for position, (tag, group_key, chunk_files) in enumerate(batch):
-                    futures.append(
-                        executor.submit(
-                            _process_chunk,
-                            (tag, group_key, chunk_files, states[tag]["done"], position),
-                        )
-                    )
-                for fut in as_completed(futures):
-                    tag, group_key, df_chunk = fut.result()
-                    _handle_result(tag, group_key, df_chunk)
+            futures = [
+                executor.submit(
+                    _process_chunk,
+                    (tag, group_key, chunk_files, states[tag]["done"], None),
+                )
+                for tag, group_key, chunk_files in all_chunks
+            ]
+            for fut in as_completed(futures):
+                tag, group_key, df_chunk = fut.result()
+                _handle_result(tag, group_key, df_chunk)
+                if bar:
+                    bar.update(1)
 
+    if bar:
+        bar.close()
     return states["fc"]["df"], states["an"]["df"]
 
 # ---------------------------------------------------------------------------
@@ -700,27 +703,36 @@ def aggregate_aifs_forecasts(fc_files, fc_save_path, n_parallel):
 
     results = []
 
+    try:
+        from tqdm import tqdm as _tqdm
+        bar = _tqdm(total=len(fc_chunks), desc="AIFS chunks", unit="chunk")
+    except ImportError:
+        bar = None
+
     if n_parallel == 1:
         for group_key, chunk_files in fc_chunks:
             _, df_chunk = _process_fc_chunk((group_key, chunk_files, set(), None))
             if df_chunk is not None:
                 results.append(df_chunk)
+            if bar:
+                bar.update(1)
     else:
         logging.info(f"Running AIFS aggregation with up to {n_parallel} workers")
         ctx = mp.get_context("fork")
         with ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx) as executor:
-            futures = []
-            for position, (group_key, chunk_files) in enumerate(fc_chunks):
-                futures.append(
-                    executor.submit(
-                        _process_fc_chunk,
-                        (group_key, chunk_files, set(), position),
-                    )
-                )
+            futures = [
+                executor.submit(_process_fc_chunk, (group_key, chunk_files, set(), None))
+                for group_key, chunk_files in fc_chunks
+            ]
             for fut in as_completed(futures):
                 _, df_chunk = fut.result()
                 if df_chunk is not None:
                     results.append(df_chunk)
+                if bar:
+                    bar.update(1)
+
+    if bar:
+        bar.close()
 
     if not results:
         return None
@@ -794,6 +806,8 @@ def restore_fc_from_bias(save_dir=None, error_path=None, fc_path=None, var_name=
 # Main
 # ---------------------------------------------------------------------------
 def main(n_parallel: int = 1):
+    t_start = time.time()
+    logging.info("=== aggregate_fc_an_2t.py | start %s ===", time.strftime("%Y-%m-%d %H:%M:%S"))
     global _WEIGHTMAP
     os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -812,12 +826,14 @@ def main(n_parallel: int = 1):
     n_parallel = max(1, int(n_parallel))
 
     # 1. Discover files
+    t_disc = time.time()
     logging.info("Building file lists ...")
     fc_files_ifs = build_fc_files(FC_DIR, START, END, FC_FREQ, LEAD_TIMES)
     fc_files_aifs = build_fc_files(AIFS_FC_DIR, START, END, FC_FREQ, LEAD_TIMES)
     an_files = build_an_files(AN_DIR, START, END, AN_FREQ)
     logging.info(
-        "Found %d IFS forecast files, %d AIFS forecast files, %d analysis files",
+        "[%.0fs] Found %d IFS forecast files, %d AIFS forecast files, %d analysis files",
+        time.time() - t_disc,
         len(fc_files_ifs),
         len(fc_files_aifs),
         len(an_files),
@@ -859,7 +875,9 @@ def main(n_parallel: int = 1):
     )
 
     # 5. Process all chunks in a shared pool (IFS only here)
+    t_agg = time.time()
     df_fc_ifs, df_an = _run_all(all_chunks, fc_path, an_path, n_parallel)
+    logging.info("[%.0fs] IFS aggregation phase complete", time.time() - t_agg)
 
     if df_fc_ifs is None or df_an is None:
         logging.warning("No IFS data aggregated")
@@ -970,6 +988,8 @@ def main(n_parallel: int = 1):
             compare_path,
         )
         write_table_metadata("aifs_vs_ifs_fc_bias_comparison_2t_county", compare_path)
+
+    logging.info("[%.0fs] Done.", time.time() - t_start)
 
 
 if __name__ == "__main__":

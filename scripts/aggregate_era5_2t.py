@@ -214,17 +214,14 @@ def _process_month(args):
     Aggregate one (year, month) group of ERA5 days.
     Returns ((yr, mo), df_month) or ((yr, mo), None).
     Relies on forked workers inheriting _WEIGHTMAP.
+    Workers are always silent; progress is tracked at the month level in main().
     """
-    (yr, mo), month_files, position = args
+    (yr, mo), month_files = args
     if _WEIGHTMAP is None:
         raise RuntimeError("Worker has no weightmap; expected forked workers to inherit _WEIGHTMAP.")
 
     results = []
-    iterable = _maybe_progress(
-        month_files, len(month_files), f"{yr}-{mo:02d}",
-        silent=not VERBOSE, position=position,
-    )
-    for path, date in iterable:
+    for path, date in month_files:
         results.append(aggregate_era5_day(path, date, _WEIGHTMAP, VAR_NAME))
 
     if not results:
@@ -242,8 +239,12 @@ def _compute_clim_incremental(months):
     """
     t0 = time.time()
     acc_sum, acc_cnt = None, None
-    n_months = len(months)
-    for i, ((yr, mo), _) in enumerate(months, 1):
+    try:
+        from tqdm import tqdm as _tqdm
+        bar = _tqdm(months, total=len(months), desc="Climatology", unit="mo")
+    except ImportError:
+        bar = months
+    for (yr, mo), _ in bar:
         path = _month_parquet_path(yr, mo)
         if not os.path.exists(path):
             logging.warning("Month %d-%02d parquet missing; excluded from climatology", yr, mo)
@@ -255,8 +256,6 @@ def _compute_clim_incremental(months):
         c = grp.count()
         acc_sum = s if acc_sum is None else acc_sum.add(s, fill_value=0)
         acc_cnt = c if acc_cnt is None else acc_cnt.add(c, fill_value=0)
-        if i % 12 == 0 or i == n_months:
-            logging.info("[%.0fs] Climatology accumulation: %d/%d months", time.time() - t0, i, n_months)
     if acc_sum is None:
         return None
     clim = (acc_sum / acc_cnt).rename(f'{VAR_NAME}_clim').reset_index()
@@ -353,15 +352,24 @@ def main(n_parallel: int = 1, write_full_table: bool = False):
         n_parallel = max(1, int(n_parallel))
         ctx = mp.get_context("fork")
         t_agg = time.time()
+        try:
+            from tqdm import tqdm as _tqdm
+            bar = _tqdm(total=len(pending), desc="ERA5 months", unit="mo")
+        except ImportError:
+            bar = None
         with ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx) as executor:
             futures = {
-                executor.submit(_process_month, (key, files, pos)): key
-                for pos, (key, files) in enumerate(pending)
+                executor.submit(_process_month, (key, files)): key
+                for key, files in pending
             }
             for fut in as_completed(futures):
                 (yr, mo), df_month = fut.result()
                 if df_month is not None:
                     _write_month_atomic(yr, mo, df_month)
+                if bar:
+                    bar.update(1)
+        if bar:
+            bar.close()
         logging.info("[%.0fs] Aggregation phase complete", time.time() - t_agg)
 
     # 4. Compute climatology incrementally
