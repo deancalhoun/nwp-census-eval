@@ -750,7 +750,8 @@ def aggregate_aifs_forecasts(fc_files, fc_save_path, n_parallel):
     else:
         logging.info(f"Running AIFS aggregation with up to {n_parallel} workers")
         ctx = mp.get_context("fork")
-        with ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx) as executor:
+        executor = ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx)
+        try:
             futures = [
                 executor.submit(_process_fc_chunk, (group_key, chunk_files, set(), None))
                 for group_key, chunk_files in fc_chunks
@@ -761,6 +762,14 @@ def aggregate_aifs_forecasts(fc_files, fc_save_path, n_parallel):
                     results.append(df_chunk)
                 if bar:
                     bar.update(1)
+        except KeyboardInterrupt:
+            logging.warning("Interrupted — shutting down AIFS workers.")
+            executor.shutdown(wait=False, cancel_futures=True)
+            if bar:
+                bar.close()
+            raise
+        else:
+            executor.shutdown(wait=True)
 
     if bar:
         bar.close()
