@@ -474,7 +474,11 @@ def _process_fc_chunk(args):
         key = _fc_checkpoint_key(init_time, lead_time)
         if key in done_keys:
             continue
-        df = aggregate_fc_file(path, init_time, lead_time, _WEIGHTMAP, VAR_NAME)
+        try:
+            df = aggregate_fc_file(path, init_time, lead_time, _WEIGHTMAP, VAR_NAME)
+        except Exception as exc:
+            logging.warning("Skipping corrupt file %s: %s", path, exc)
+            continue
         results.append(df)
 
     if not results:
@@ -494,7 +498,11 @@ def _process_an_month(args):
         t_str = pd.to_datetime(time).strftime("%Y-%m-%d %H:%M:%S")
         if t_str in done_times:
             continue
-        df = aggregate_an_file(path, time, _WEIGHTMAP, VAR_NAME)
+        try:
+            df = aggregate_an_file(path, time, _WEIGHTMAP, VAR_NAME)
+        except Exception as exc:
+            logging.warning("Skipping corrupt file %s: %s", path, exc)
+            continue
         results.append(df)
 
     if not results:
