@@ -659,7 +659,8 @@ def _run_all(all_chunks, fc_save_path, an_save_path, n_parallel):
     else:
         logging.info(f"Running with up to {n_parallel} workers (fc + an shared pool)")
         ctx = mp.get_context("fork")
-        with ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx) as executor:
+        executor = ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx)
+        try:
             futures = [
                 executor.submit(
                     _process_chunk,
@@ -672,6 +673,14 @@ def _run_all(all_chunks, fc_save_path, an_save_path, n_parallel):
                 _handle_result(tag, group_key, df_chunk)
                 if bar:
                     bar.update(1)
+        except KeyboardInterrupt:
+            logging.warning("Interrupted — shutting down workers (completed chunks are checkpointed).")
+            executor.shutdown(wait=False, cancel_futures=True)
+            if bar:
+                bar.close()
+            raise
+        else:
+            executor.shutdown(wait=True)
 
     if bar:
         bar.close()

@@ -357,7 +357,8 @@ def main(n_parallel: int = 1, write_full_table: bool = False):
             bar = _tqdm(total=len(pending), desc="ERA5 months", unit="mo")
         except ImportError:
             bar = None
-        with ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx) as executor:
+        executor = ProcessPoolExecutor(max_workers=n_parallel, mp_context=ctx)
+        try:
             futures = {
                 executor.submit(_process_month, (key, files)): key
                 for key, files in pending
@@ -368,6 +369,14 @@ def main(n_parallel: int = 1, write_full_table: bool = False):
                     _write_month_atomic(yr, mo, df_month)
                 if bar:
                     bar.update(1)
+        except KeyboardInterrupt:
+            logging.warning("Interrupted — shutting down workers (completed months are checkpointed).")
+            executor.shutdown(wait=False, cancel_futures=True)
+            if bar:
+                bar.close()
+            raise
+        else:
+            executor.shutdown(wait=True)
         if bar:
             bar.close()
         logging.info("[%.0fs] Aggregation phase complete", time.time() - t_agg)
