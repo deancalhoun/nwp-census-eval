@@ -23,6 +23,12 @@ dependencies:
   - xarray
   - duckdb
   - pyarrow
+  - tqdm
+  - rioxarray
+  # Analysis / spatial statistics
+  - pymc
+  - arviz
+  - libpysal
   # Census data
   - pip:
     - censusdis
