@@ -240,13 +240,14 @@ def _scan_dir_parallel(directory):
     return len(nc_files), grib_files, corrupt_files
 
 
-def check_grib_nc_files(fix=False):
+def check_grib_nc_files(fix=False, remove_corrupt=False):
     """Scan all .nc files in the IFS/AIFS directories for format problems.
 
     Reads only the first 4 bytes of each file (magic bytes) using 32 threads
     in parallel. Detects both GRIB-format files (unconverted) and corrupt files
     (neither NetCDF3/4 nor GRIB — e.g. truncated downloads).
     If fix=True, runs grib_to_netcdf in-place on GRIB files.
+    If remove_corrupt=True, deletes corrupt files so they can be re-downloaded.
     """
     dirs = {
         "IFS fc":  IFS_FC_DIR,
@@ -291,8 +292,19 @@ def check_grib_nc_files(fix=False):
                         os.remove(tmp)
             detail += f" | GRIB fixed {n_fixed:,}, failed {n_failed:,}"
 
+        if corrupt_files and remove_corrupt:
+            for path in corrupt_files:
+                os.remove(path)
+            detail += f" | corrupt removed {n_corrupt:,}"
+            n_corrupt = 0  # cleared
+
         if n_corrupt or (n_grib and not fix):
-            detail += " — corrupt files must be re-downloaded; GRIB: re-run with --fix-grib"
+            hints = []
+            if n_grib and not fix:
+                hints.append("GRIB: re-run with --fix-grib")
+            if n_corrupt:
+                hints.append("corrupt: re-run with --remove-corrupt")
+            detail += " — " + "; ".join(hints)
         status = "PARTIAL" if (n_corrupt or (n_grib and not fix)) else "OK"
         results.append(_status(f"{label} file sweep", status, detail))
     return results
@@ -313,6 +325,11 @@ def main(argv=None):
         "--fix-grib",
         action="store_true",
         help="Convert any GRIB-format .nc files in place using grib_to_netcdf.",
+    )
+    parser.add_argument(
+        "--remove-corrupt",
+        action="store_true",
+        help="Delete corrupt .nc files (neither NetCDF nor GRIB) so they can be re-downloaded.",
     )
     args = parser.parse_args(argv)
 
@@ -351,7 +368,7 @@ def main(argv=None):
         any_missing = True
 
     print("\n-- .nc file format sweep --")
-    for msg, _ in check_grib_nc_files(fix=args.fix_grib):
+    for msg, _ in check_grib_nc_files(fix=args.fix_grib, remove_corrupt=args.remove_corrupt):
         print(msg)
 
     print("\n-- IFS/AIFS downloads --")
