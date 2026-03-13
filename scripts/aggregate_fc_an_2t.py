@@ -21,6 +21,7 @@ import logging
 import argparse
 import json
 import time
+import subprocess
 from itertools import groupby
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
@@ -400,9 +401,29 @@ def align_fc_an(fc_files, an_files):
 # ---------------------------------------------------------------------------
 # Per-file aggregation (standalone, usable by workers)
 # ---------------------------------------------------------------------------
+def _open_netcdf(path):
+    """Open a file as xarray Dataset; runs grib_to_netcdf in-place if file is GRIB format."""
+    try:
+        return xr.open_dataset(path, engine="netcdf4")
+    except OSError as exc:
+        if "Unknown file format" not in str(exc):
+            raise
+    # File has .nc extension but is GRIB format — convert in-place
+    logging.warning("Converting GRIB-format file to NetCDF: %s", path)
+    tmp = path + ".converting"
+    result = subprocess.run(
+        ["grib_to_netcdf", "-o", tmp, path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not os.path.exists(tmp):
+        raise RuntimeError(f"grib_to_netcdf failed for {path}: {result.stderr.strip()}")
+    os.replace(tmp, path)
+    return xr.open_dataset(path, engine="netcdf4")
+
+
 def aggregate_fc_file(path, init_time, lead_time, weightmap, var_name):
     """Aggregate one forecast file to counties using *weightmap*."""
-    ds = xr.open_dataset(path, engine="netcdf4")
+    ds = _open_netcdf(path)
     ds = xagg.fix_ds(ds)
     aggregated = xagg.aggregate(ds, weightmap, silent=True)
     df = (
@@ -418,7 +439,7 @@ def aggregate_fc_file(path, init_time, lead_time, weightmap, var_name):
 
 def aggregate_an_file(path, time, weightmap, var_name):
     """Aggregate one analysis file to counties using *weightmap*."""
-    with xr.open_dataset(path, engine="netcdf4") as ds:
+    with _open_netcdf(path) as ds:
         ds_slice = ds.sel(time=pd.to_datetime(time), method="nearest")
     ds_slice = xagg.fix_ds(ds_slice)
     aggregated = xagg.aggregate(ds_slice, weightmap, silent=True)
