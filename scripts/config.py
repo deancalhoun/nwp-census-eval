@@ -31,6 +31,9 @@ KOPPEN_PATH = os.path.join(SCRATCH, "koppen_geiger/1991_2020/koppen_geiger_0p5.t
 
 # Aggregated output directory — ALL processed parquets go here, including ERA5 climatology
 AGGREGATED_DIR = os.path.join(SCRATCH, "aggregated")
+
+# Weightmap disk cache — shared across all aggregation scripts to avoid recomputing pixel_overlaps
+WEIGHTMAP_CACHE_DIR = os.path.join(AGGREGATED_DIR, "weightmap_cache")
 ERA5_CLIM_PATH = os.path.join(
     AGGREGATED_DIR, "era5_2t_county_climatology_1991_2020.parquet"
 )

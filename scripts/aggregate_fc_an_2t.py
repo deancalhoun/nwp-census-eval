@@ -37,14 +37,15 @@ from nwp_census_eval.aggregate import _maybe_progress
 import xagg
 from config import (
     SHAPEFILE_PATH,
-    IFS_FC_DIR  as FC_DIR,
+    IFS_FC_DIR       as FC_DIR,
     AIFS_FC_DIR,
-    IFS_AN_DIR  as AN_DIR,
-    ERA5_CLIM_PATH as CLIM_PATH,
-    AGGREGATED_DIR as SAVE_DIR,
-    IFS_START   as START,
-    IFS_END     as END,
+    IFS_AN_DIR       as AN_DIR,
+    ERA5_CLIM_PATH   as CLIM_PATH,
+    AGGREGATED_DIR   as SAVE_DIR,
+    IFS_START        as START,
+    IFS_END          as END,
     LEAD_TIMES,
+    WEIGHTMAP_CACHE_DIR,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -864,7 +865,8 @@ def main(n_parallel: int = 1):
     grid_path = fc_files_ifs[0][0]
     logging.info("Building weightmap ...")
     geo_agg = wxagg.GeoAggregator(
-        shapefile_path=SHAPEFILE_PATH, grid_path=grid_path, silent=not VERBOSE
+        shapefile_path=SHAPEFILE_PATH, grid_path=grid_path,
+        silent=not VERBOSE, cache_dir=WEIGHTMAP_CACHE_DIR,
     )
     _WEIGHTMAP = geo_agg.weightmap
 

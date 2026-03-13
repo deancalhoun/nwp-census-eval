@@ -1,7 +1,14 @@
 import glob
+import hashlib
+import logging
 import netCDF4
 import os
+import pickle
 import xagg
+try:
+    import rioxarray  # noqa: F401  registers GeoTIFF engine with xarray/rasterio
+except ImportError:
+    pass
 import numpy as np
 import xarray as xr
 import geopandas as gpd
@@ -35,6 +42,55 @@ def _log_progress(iterable, total, desc, step):
             print(f"  {desc}: {i}/{total}")
         yield item
 
+# ---------------------------------------------------------------------------
+# Weightmap disk cache
+# ---------------------------------------------------------------------------
+
+def _weightmap_cache_key(shapefile_path: str, ds) -> str:
+    """
+    Stable cache key from shapefile mtime and grid lat/lon arrays.
+    Two files with identical grids (same resolution/extent) share one cache entry;
+    changing the shapefile or grid invalidates it automatically.
+    """
+    h = hashlib.sha256()
+    h.update(shapefile_path.encode())
+    h.update(str(os.path.getmtime(shapefile_path)).encode())
+    h.update(np.asarray(ds['lat'].values, dtype=np.float64).tobytes())
+    h.update(np.asarray(ds['lon'].values, dtype=np.float64).tobytes())
+    return h.hexdigest()[:16]
+
+
+def _load_weightmap_cache(cache_key: str, cache_dir: str):
+    """Return cached weightmap or None if missing/unreadable."""
+    path = os.path.join(cache_dir, f"weightmap_{cache_key}.pkl")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            wm = pickle.load(f)
+        logging.info("Loaded weightmap from cache: %s", path)
+        return wm
+    except Exception as exc:
+        logging.warning("Weightmap cache unreadable (%s); will recompute.", exc)
+        return None
+
+
+def _save_weightmap_cache(weightmap, cache_key: str, cache_dir: str) -> None:
+    """Pickle weightmap to cache_dir atomically. Silent failure if unpicklable."""
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, f"weightmap_{cache_key}.pkl")
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as f:
+            pickle.dump(weightmap, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+        logging.info("Saved weightmap cache: %s", path)
+    except Exception as exc:
+        logging.warning("Could not cache weightmap (%s); continuing without cache.", exc)
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def _add_writable_bnds(ds):
     """Add lat_bnds and lon_bnds so xagg skips get_bnds (avoids read-only error)."""
     for var in ['lat', 'lon']:
@@ -50,39 +106,53 @@ def _add_writable_bnds(ds):
         ds[var + '_bnds'] = xr.DataArray(bnds, dims=(var, 'bnds'), coords={var: ds[var]})
 
 class GeoAggregator:
-    def __init__(self, shapefile_path, grid_path, coords="WGS84", silent=True):
+    def __init__(self, shapefile_path, grid_path, coords="WGS84", silent=True, cache_dir=None):
         '''
         Initializes the GeoAggregator class.
         Inputs:
             shapefile_path: path to the shapefile to aggregate to (str)
             grid_path: path to a sample gridded data file to aggregate (str)
             coords: coordinate system of the data (str)
+            cache_dir: directory for weightmap disk cache (str or None to disable)
         '''
         # Allow either NetCDF-like files or GeoTIFFs for the sample grid.
         ext = os.path.splitext(grid_path)[1].lower()
         if ext in (".tif", ".tiff"):
             da = xr.open_dataarray(grid_path)
-            # Ensure there is at least one data variable name
             if da.name is None:
                 da = da.rename("var")
             sample_datafile = da.to_dataset()
         else:
             with xr.open_dataset(grid_path) as ds:
                 sample_datafile = ds.load().copy(deep=True)
-        # Pre-process for xagg: convert lon 0-360 to -180-180, add bounds (avoids read-only error in xagg.get_bnds)
+        # Pre-process for xagg: convert lon 0-360 to -180-180, add bounds
         sample_datafile = fix_ds(sample_datafile)
         _add_writable_bnds(sample_datafile)
         self.grid = sample_datafile[['lat', 'lon']].coords
         self.shapefile = gpd.read_file(shapefile_path).to_crs(coords)
-        if not silent:
-            print("Building weightmap from grid and shapefile...")
-        self.weightmap = xagg.pixel_overlaps(sample_datafile, self.shapefile, silent=silent)
+
+        # Build or load weightmap
+        cached = None
+        if cache_dir is not None:
+            cache_key = _weightmap_cache_key(shapefile_path, sample_datafile)
+            cached = _load_weightmap_cache(cache_key, cache_dir)
+        if cached is not None:
+            self.weightmap = cached
+            if not silent:
+                print("Weightmap loaded from cache.")
+        else:
+            if not silent:
+                print("Building weightmap from grid and shapefile...")
+            self.weightmap = xagg.pixel_overlaps(sample_datafile, self.shapefile, silent=silent)
+            if cache_dir is not None:
+                _save_weightmap_cache(self.weightmap, cache_key, cache_dir)
 
         self.shapefile_path = shapefile_path
         self.latname = 'lat'  # fix_ds renames to lat/lon
         self.lonname = 'lon'
         self.coords = coords
         self.silent = silent
+        self.cache_dir = cache_dir
 
     def __repr__(self):
         return f"GeoAggregator\nshapefile: {self.shapefile_path!r}\n{self.grid!r}\nCRS: {self.coords!r}"
@@ -308,6 +378,7 @@ class CategoricalAggregator(GeoAggregator):
         var_name: str,
         coords: str = "WGS84",
         silent: bool = True,
+        cache_dir: str = None,
     ):
         """
         Initialize from a shapefile and a sample categorical gridded file.
@@ -316,7 +387,8 @@ class CategoricalAggregator(GeoAggregator):
         weightmap; any other categorical files passed to `aggregate` must
         share this same grid.
         """
-        super().__init__(shapefile_path, grid_path=categorical_file, coords=coords, silent=silent)
+        super().__init__(shapefile_path, grid_path=categorical_file, coords=coords,
+                         silent=silent, cache_dir=cache_dir)
         self.var_name = var_name
 
     @classmethod

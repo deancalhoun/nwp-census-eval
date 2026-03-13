@@ -30,11 +30,12 @@ from nwp_census_eval import aggregate as wxagg
 from nwp_census_eval.aggregate import _maybe_progress
 import xagg
 from config import (
-    ERA5_DIR        as ERA_DIR,
+    ERA5_DIR             as ERA_DIR,
     SHAPEFILE_PATH,
-    AGGREGATED_DIR  as SAVE_DIR,
-    ERA5_CLIM_START as START,
-    ERA5_CLIM_END   as END,
+    AGGREGATED_DIR       as SAVE_DIR,
+    ERA5_CLIM_START      as START,
+    ERA5_CLIM_END        as END,
+    WEIGHTMAP_CACHE_DIR,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -349,7 +350,8 @@ def main(n_parallel: int = 1, write_full_table: bool = False):
     if pending:
         global _WEIGHTMAP
         _WEIGHTMAP = wxagg.GeoAggregator(
-            shapefile_path=SHAPEFILE_PATH, grid_path=era_files[0][0], silent=not VERBOSE
+            shapefile_path=SHAPEFILE_PATH, grid_path=era_files[0][0],
+            silent=not VERBOSE, cache_dir=WEIGHTMAP_CACHE_DIR,
         ).weightmap
 
         n_parallel = max(1, int(n_parallel))
