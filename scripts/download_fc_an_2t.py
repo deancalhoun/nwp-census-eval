@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 import logging
+import time
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -83,6 +84,8 @@ def main(argv=None):
         help="Enable INFO logging (otherwise keep output minimal when validating).",
     )
     args = parser.parse_args(argv)
+    _t_start = time.time()
+    logging.info("=== download_fc_an_2t.py | start %s ===", time.strftime("%Y-%m-%d %H:%M:%S"))
 
     param      = PARAM
     lead_times = [str(lt) for lt in LEAD_TIMES]  # ECMWFDataClient expects strings

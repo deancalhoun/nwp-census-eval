@@ -22,7 +22,9 @@ STEPS = [
     ("download",       "download_fc_an_2t.py"),
     ("aggregate-era5", "aggregate_era5_2t.py"),
     ("aggregate-fc",   "aggregate_fc_an_2t.py"),
+    ("koppen",         "aggregate_koppen.py"),
     ("acs",            "download_acs.py"),
+    ("validate",       "validate_pipeline.py"),
 ]
 STEP_NAMES = [s[0] for s in STEPS]
 STEP_MAP   = dict(STEPS)
