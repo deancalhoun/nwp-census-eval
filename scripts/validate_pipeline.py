@@ -12,6 +12,8 @@ Usage:
 import os
 import sys
 import argparse
+import glob
+import subprocess
 
 import pyarrow.parquet as pq
 
@@ -26,6 +28,9 @@ from config import (
     KOPPEN_PATH,
     ERA5_CLIM_START,
     ERA5_CLIM_END,
+    IFS_FC_DIR,
+    IFS_AN_DIR,
+    AIFS_FC_DIR,
 )
 
 _MARKER = {
@@ -183,6 +188,70 @@ def check_acs():
 
 
 # ---------------------------------------------------------------------------
+# GRIB-format .nc file sweep
+# ---------------------------------------------------------------------------
+_GRIB_MAGIC = b"GRIB"
+
+
+def _is_grib(path):
+    """Return True if the file starts with the GRIB magic bytes."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == _GRIB_MAGIC
+    except OSError:
+        return False
+
+
+def check_grib_nc_files(fix=False):
+    """Scan all .nc files in the IFS/AIFS directories for unconverted GRIB content.
+
+    Reads only the first 4 bytes of each file (magic bytes check) — fast even
+    over 100k+ files. If fix=True, runs grib_to_netcdf in-place on each bad file.
+    """
+    dirs = {
+        "IFS fc":  IFS_FC_DIR,
+        "IFS an":  IFS_AN_DIR,
+        "AIFS fc": AIFS_FC_DIR,
+    }
+    results = []
+    total_grib = 0
+    for label, directory in dirs.items():
+        if not os.path.isdir(directory):
+            results.append(_status(f"{label} GRIB sweep", "SKIP", f"directory not found: {directory}"))
+            continue
+        nc_files = glob.glob(os.path.join(directory, "**", "*.nc"), recursive=True)
+        grib_files = [p for p in nc_files if _is_grib(p)]
+        n_nc, n_grib = len(nc_files), len(grib_files)
+        total_grib += n_grib
+        if n_grib == 0:
+            results.append(_status(f"{label} GRIB sweep", "OK",
+                                   f"{n_nc} .nc files checked — all valid NetCDF"))
+        else:
+            pct = 100 * n_grib / n_nc if n_nc else 0
+            detail = f"{n_grib}/{n_nc} files ({pct:.1f}%) are GRIB format"
+            if fix:
+                n_fixed, n_failed = 0, 0
+                for path in grib_files:
+                    tmp = path + ".converting"
+                    r = subprocess.run(["grib_to_netcdf", "-o", tmp, path],
+                                       capture_output=True)
+                    if r.returncode == 0 and os.path.exists(tmp):
+                        os.replace(tmp, path)
+                        n_fixed += 1
+                    else:
+                        n_failed += 1
+                        if os.path.exists(tmp):
+                            os.remove(tmp)
+                detail += f" | fixed {n_fixed}, failed {n_failed}"
+                status = "OK" if n_failed == 0 else "PARTIAL"
+            else:
+                detail += " — re-run with --fix-grib to convert in place"
+                status = "PARTIAL"
+            results.append(_status(f"{label} GRIB sweep", status, detail))
+    return results, total_grib
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -192,6 +261,11 @@ def main(argv=None):
         "--skip-download-check",
         action="store_true",
         help="Skip the IFS/AIFS raw download tree check (faster).",
+    )
+    parser.add_argument(
+        "--fix-grib",
+        action="store_true",
+        help="Convert any GRIB-format .nc files in place using grib_to_netcdf.",
     )
     args = parser.parse_args(argv)
 
@@ -228,6 +302,11 @@ def main(argv=None):
     print(msg)
     if status == "MISSING":
         any_missing = True
+
+    print("\n-- GRIB-format .nc file sweep --")
+    grib_results, total_grib = check_grib_nc_files(fix=args.fix_grib)
+    for msg, _ in grib_results:
+        print(msg)
 
     print("\n-- IFS/AIFS downloads --")
     if args.skip_download_check:
