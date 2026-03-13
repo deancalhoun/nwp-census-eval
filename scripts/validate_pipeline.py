@@ -14,6 +14,7 @@ import sys
 import argparse
 import glob
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyarrow.parquet as pq
 
@@ -191,6 +192,7 @@ def check_acs():
 # GRIB-format .nc file sweep
 # ---------------------------------------------------------------------------
 _GRIB_MAGIC = b"GRIB"
+_SWEEP_WORKERS = 32  # I/O-bound; more threads = faster on parallel filesystems
 
 
 def _is_grib(path):
@@ -202,11 +204,38 @@ def _is_grib(path):
         return False
 
 
+def _scan_dir_parallel(directory):
+    """Return (nc_files, grib_files) for a directory tree using parallel I/O."""
+    nc_files = glob.glob(os.path.join(directory, "**", "*.nc"), recursive=True)
+    if not nc_files:
+        return nc_files, []
+
+    try:
+        from tqdm import tqdm
+        bar = tqdm(total=len(nc_files), desc=f"  scanning {os.path.basename(directory)}",
+                   unit="file", leave=False)
+    except ImportError:
+        bar = None
+
+    grib_files = []
+    with ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
+        futures = {pool.submit(_is_grib, p): p for p in nc_files}
+        for fut in as_completed(futures):
+            if fut.result():
+                grib_files.append(futures[fut])
+            if bar:
+                bar.update(1)
+    if bar:
+        bar.close()
+    return nc_files, grib_files
+
+
 def check_grib_nc_files(fix=False):
     """Scan all .nc files in the IFS/AIFS directories for unconverted GRIB content.
 
-    Reads only the first 4 bytes of each file (magic bytes check) — fast even
-    over 100k+ files. If fix=True, runs grib_to_netcdf in-place on each bad file.
+    Reads only the first 4 bytes of each file (magic bytes check) using
+    32 threads in parallel — minimises per-file latency on networked filesystems.
+    If fix=True, runs grib_to_netcdf in-place on each bad file.
     """
     dirs = {
         "IFS fc":  IFS_FC_DIR,
@@ -217,21 +246,21 @@ def check_grib_nc_files(fix=False):
     total_grib = 0
     for label, directory in dirs.items():
         if not os.path.isdir(directory):
-            results.append(_status(f"{label} GRIB sweep", "SKIP", f"directory not found: {directory}"))
+            results.append(_status(f"{label} GRIB sweep", "SKIP",
+                                   f"directory not found: {directory}"))
             continue
-        nc_files = glob.glob(os.path.join(directory, "**", "*.nc"), recursive=True)
-        grib_files = [p for p in nc_files if _is_grib(p)]
+        nc_files, grib_files = _scan_dir_parallel(directory)
         n_nc, n_grib = len(nc_files), len(grib_files)
         total_grib += n_grib
         if n_grib == 0:
             results.append(_status(f"{label} GRIB sweep", "OK",
-                                   f"{n_nc} .nc files checked — all valid NetCDF"))
+                                   f"{n_nc:,} .nc files checked — all valid NetCDF"))
         else:
             pct = 100 * n_grib / n_nc if n_nc else 0
-            detail = f"{n_grib}/{n_nc} files ({pct:.1f}%) are GRIB format"
+            detail = f"{n_grib:,}/{n_nc:,} files ({pct:.1f}%) are GRIB format"
             if fix:
                 n_fixed, n_failed = 0, 0
-                for path in grib_files:
+                for path in sorted(grib_files):
                     tmp = path + ".converting"
                     r = subprocess.run(["grib_to_netcdf", "-o", tmp, path],
                                        capture_output=True)
@@ -242,7 +271,7 @@ def check_grib_nc_files(fix=False):
                         n_failed += 1
                         if os.path.exists(tmp):
                             os.remove(tmp)
-                detail += f" | fixed {n_fixed}, failed {n_failed}"
+                detail += f" | fixed {n_fixed:,}, failed {n_failed:,}"
                 status = "OK" if n_failed == 0 else "PARTIAL"
             else:
                 detail += " — re-run with --fix-grib to convert in place"
