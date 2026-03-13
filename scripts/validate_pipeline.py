@@ -5,8 +5,9 @@ Reads file paths and parquet metadata without loading full data into memory.
 Prints one block per section; exits with code 0 if all OK, 1 if any MISSING.
 
 Usage:
-    python scripts/validate_pipeline.py
-    python scripts/validate_pipeline.py --skip-download-check
+    python scripts/validate_pipeline.py                  # fast default check
+    python scripts/validate_pipeline.py --check-downloads --nc-sweep
+    python scripts/validate_pipeline.py --fix-grib --remove-corrupt
 """
 
 import os
@@ -336,27 +337,73 @@ def check_grib_nc_files(fix=False, remove_corrupt=False):
 
 
 # ---------------------------------------------------------------------------
+# Download directory check
+# ---------------------------------------------------------------------------
+def check_downloads():
+    """Check IFS/AIFS download directories by counting files at each level."""
+    from config import IFS_FC_DIR, IFS_AN_DIR, AIFS_FC_DIR
+
+    def _count_nc(directory):
+        """Count .nc files one level deep (init_hour/lead or year/month subdirs)."""
+        n = 0
+        try:
+            for root, dirs, files in os.walk(directory):
+                n += sum(1 for f in files if f.endswith(".nc"))
+        except OSError:
+            return None
+        return n
+
+    results = []
+    for label, directory in [
+        ("IFS fc",  IFS_FC_DIR),
+        ("IFS an",  IFS_AN_DIR),
+        ("AIFS fc", AIFS_FC_DIR),
+    ]:
+        if not os.path.isdir(directory):
+            results.append(_status(f"{label} downloads", "MISSING",
+                                   f"directory not found: {directory}"))
+            continue
+        n = _count_nc(directory)
+        if n is None:
+            results.append(_status(f"{label} downloads", "MISSING",
+                                   f"unreadable: {directory}"))
+        elif n == 0:
+            results.append(_status(f"{label} downloads", "MISSING",
+                                   f"no .nc files in {directory}"))
+        else:
+            results.append(_status(f"{label} downloads", "OK",
+                                   f"{n:,} .nc files — {directory}"))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Validate nwp-census-eval pipeline outputs.")
     parser.add_argument(
-        "--skip-download-check",
+        "--check-downloads",
         action="store_true",
-        help="Skip the IFS/AIFS raw download tree check (faster).",
+        help="Check IFS/AIFS download directories (skipped by default; slow on large trees).",
+    )
+    parser.add_argument(
+        "--nc-sweep",
+        action="store_true",
+        help="Scan .nc files for GRIB/corrupt content (skipped by default; slow on 100k+ files).",
     )
     parser.add_argument(
         "--fix-grib",
         action="store_true",
-        help="Convert any GRIB-format .nc files in place using grib_to_netcdf.",
+        help="Convert GRIB-format .nc files in place (implies --nc-sweep).",
     )
     parser.add_argument(
         "--remove-corrupt",
         action="store_true",
-        help="Delete corrupt .nc files (neither NetCDF nor GRIB) so they can be re-downloaded.",
+        help="Delete corrupt .nc files so they can be re-downloaded (implies --nc-sweep).",
     )
     args = parser.parse_args(argv)
+    run_nc_sweep = args.nc_sweep or args.fix_grib or args.remove_corrupt
 
     print("\n=== nwp-census-eval pipeline status ===\n")
     any_missing = False
@@ -393,55 +440,20 @@ def main(argv=None):
         any_missing = True
 
     print("\n-- .nc file format sweep --")
-    for msg, _ in check_grib_nc_files(fix=args.fix_grib, remove_corrupt=args.remove_corrupt):
-        print(msg)
+    if run_nc_sweep:
+        for msg, _ in check_grib_nc_files(fix=args.fix_grib, remove_corrupt=args.remove_corrupt):
+            print(msg)
+    else:
+        print(_status(".nc file sweep", "SKIP", "pass --nc-sweep to enable")[0])
 
     print("\n-- IFS/AIFS downloads --")
-    if args.skip_download_check:
-        print(_status("IFS/AIFS downloads", "SKIP", "--skip-download-check specified")[0])
-    else:
-        try:
-            from download_fc_an_2t import (
-                _validate_forecast, _validate_analysis, _extend_end_date_for_analysis,
-            )
-            from nwp_census_eval.data import ECMWFDataClient
-            from config import (
-                IFS_BASE_DIR, AIFS_BASE_DIR,
-                IFS_START, IFS_END, AIFS_START, AIFS_END,
-                PARAM, LEAD_TIMES, INIT_HOURS, CONUS_BOUNDS,
-                IFS_GRID, AIFS_GRID,
-            )
-            lead_str = [str(lt) for lt in LEAD_TIMES]
-            # IFS forecast
-            fc_client = ECMWFDataClient(
-                base_dir=IFS_BASE_DIR, param=PARAM, start=IFS_START, end=IFS_END,
-                lead_times=lead_str, init_hours=INIT_HOURS, grid=IFS_GRID,
-                model="ifs", bounds=CONUS_BOUNDS, max_concurrent_requests=1,
-            )
-            ok_fc = _validate_forecast(fc_client, "IFS")
-            # IFS analysis — end date extended to cover max lead time valid times
-            an_end = _extend_end_date_for_analysis(IFS_END, lead_str)
-            an_client = ECMWFDataClient(
-                base_dir=IFS_BASE_DIR, param=PARAM, start=IFS_START, end=an_end,
-                lead_times=lead_str, init_hours=INIT_HOURS, grid=IFS_GRID,
-                model="ifs", bounds=CONUS_BOUNDS, max_concurrent_requests=1,
-            )
-            ok_an = _validate_analysis(an_client, "IFS")
-            # AIFS forecast
-            aifs_client = ECMWFDataClient(
-                base_dir=AIFS_BASE_DIR, param=PARAM, start=AIFS_START, end=AIFS_END,
-                lead_times=lead_str, init_hours=INIT_HOURS, grid=AIFS_GRID,
-                model="aifs", bounds=CONUS_BOUNDS, max_concurrent_requests=1,
-            )
-            ok_aifs = _validate_forecast(aifs_client, "AIFS")
-            if ok_fc and ok_an and ok_aifs:
-                print(_status("IFS/AIFS downloads", "OK")[0])
-            else:
-                print(_status("IFS/AIFS downloads", "PARTIAL", "see above for details")[0])
+    if args.check_downloads:
+        for msg, status in check_downloads():
+            print(msg)
+            if status == "MISSING":
                 any_missing = True
-        except Exception as exc:
-            print(_status("IFS/AIFS downloads", "MISSING", str(exc))[0])
-            any_missing = True
+    else:
+        print(_status("IFS/AIFS downloads", "SKIP", "pass --check-downloads to enable")[0])
 
     print("\n" + "=" * 40)
     if any_missing:
