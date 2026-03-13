@@ -402,7 +402,7 @@ def align_fc_an(fc_files, an_files):
 # ---------------------------------------------------------------------------
 def aggregate_fc_file(path, init_time, lead_time, weightmap, var_name):
     """Aggregate one forecast file to counties using *weightmap*."""
-    ds = xr.open_dataset(path)
+    ds = xr.open_dataset(path, engine="netcdf4")
     ds = xagg.fix_ds(ds)
     aggregated = xagg.aggregate(ds, weightmap, silent=True)
     df = (
@@ -418,7 +418,7 @@ def aggregate_fc_file(path, init_time, lead_time, weightmap, var_name):
 
 def aggregate_an_file(path, time, weightmap, var_name):
     """Aggregate one analysis file to counties using *weightmap*."""
-    with xr.open_dataset(path) as ds:
+    with xr.open_dataset(path, engine="netcdf4") as ds:
         ds_slice = ds.sel(time=pd.to_datetime(time), method="nearest")
     ds_slice = xagg.fix_ds(ds_slice)
     aggregated = xagg.aggregate(ds_slice, weightmap, silent=True)
