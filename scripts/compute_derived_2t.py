@@ -185,14 +185,12 @@ def _derive_month(df_fc, df_an, clim, area_weights, var_name):
     """
     df_an = df_an.rename(columns={"time": "valid_time"})
 
-    # Bias
+    # Bias — merge produces t2m_x / t2m_y when both frames share the column name
     df = pd.merge(
         df_fc, df_an,
         on=["geo_id", "valid_time"],
-        suffixes=(f"_{var_name}_fc_", f"_{var_name}_an_"),
         how="inner",
     )
-    # Rename t2m columns (suffixes apply only if both have same name)
     df = df.rename(columns={
         var_name + "_x": f"{var_name}_fc",
         var_name + "_y": f"{var_name}_an",
