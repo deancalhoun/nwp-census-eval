@@ -362,12 +362,13 @@ def _check_nc_content(path, expected_var):
     return True, ""
 
 
-def check_nc_content(max_failures_shown=20):
+def check_nc_content(remove_bad=False, max_failures_shown=20):
     """
     Open every .nc file in each download directory with xarray and verify the
     expected variable ('t2m') and spatial dimensions are present. Uses
     _SWEEP_WORKERS threads in parallel (same as the magic-byte sweep).
     Reports total failure count and up to max_failures_shown example paths.
+    If remove_bad=True, deletes all failing files so they can be re-downloaded.
     """
     dirs = {
         "IFS fc":  (IFS_FC_DIR,  "t2m"),
@@ -406,6 +407,14 @@ def check_nc_content(max_failures_shown=20):
             bar.close()
 
         n_total, n_fail = len(nc_files), len(failures)
+
+        if remove_bad and failures:
+            for path, _ in failures:
+                try:
+                    os.remove(path)
+                except OSError as exc:
+                    print(f"    WARNING: could not delete {path}: {exc}")
+
         if n_fail == 0:
             results.append(_status(
                 f"{label} content check ({n_total:,} files)", "OK",
@@ -414,12 +423,15 @@ def check_nc_content(max_failures_shown=20):
         else:
             shown = failures[:max_failures_shown]
             detail = f"{n_fail:,}/{n_total:,} files failed"
+            if remove_bad:
+                detail += f" — {n_fail:,} deleted"
             if n_fail > max_failures_shown:
                 detail += f" (showing first {max_failures_shown})"
             detail += ": " + "; ".join(
                 f"{os.path.basename(p)}: {r}" for p, r in shown
             )
-            results.append(_status(f"{label} content check ({n_total:,} files)", "PARTIAL", detail))
+            status = "OK" if remove_bad else "PARTIAL"
+            results.append(_status(f"{label} content check ({n_total:,} files)", status, detail))
     return results
 
 
@@ -494,8 +506,14 @@ def main(argv=None):
         action="store_true",
         help="Open every .nc file with xarray and verify variable/grid content (parallel, slow on large trees).",
     )
+    parser.add_argument(
+        "--remove-bad-content",
+        action="store_true",
+        help="Delete files that fail the content check so they can be re-downloaded (implies --content-check).",
+    )
     args = parser.parse_args(argv)
     run_nc_sweep = args.nc_sweep or args.fix_grib or args.remove_corrupt
+    run_content_check = args.content_check or args.remove_bad_content
 
     print("\n=== nwp-census-eval pipeline status ===\n")
     any_missing = False
@@ -539,8 +557,8 @@ def main(argv=None):
         print(_status(".nc file sweep", "SKIP", "pass --nc-sweep to enable")[0])
 
     print("\n-- .nc file content check (xarray variable/grid, all files) --")
-    if args.content_check:
-        for msg, _ in check_nc_content():
+    if run_content_check:
+        for msg, _ in check_nc_content(remove_bad=args.remove_bad_content):
             print(msg)
     else:
         print(_status(".nc content check", "SKIP", "pass --content-check to enable")[0])
