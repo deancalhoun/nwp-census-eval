@@ -4,12 +4,22 @@ scripts/validate_pipeline.py — Pipeline status report.
 Reads file paths and parquet metadata without loading full data into memory.
 Prints one block per section; exits with code 0 if all OK, 1 if any MISSING.
 
+Sections (always run):
+    ERA5 monthly parquets, ERA5 climatology, aggregation outputs,
+    checkpoint completeness, Koppen-Geiger, ACS data.
+
+Opt-in sections (slow on large file trees):
+    --nc-sweep / --fix-grib / --remove-corrupt  — magic-byte sweep
+    --content-check / --remove-bad-content      — xarray variable check
+    --check-downloads                           — raw .nc file counts
+
 Usage:
     python scripts/validate_pipeline.py                  # fast default check
     python scripts/validate_pipeline.py --check-downloads --nc-sweep
     python scripts/validate_pipeline.py --fix-grib --remove-corrupt
 """
 
+import calendar
 import os
 import sys
 import argparse
@@ -143,6 +153,83 @@ def _check_monthly_dir(label, monthly_dir):
         return _status(label, "PARTIAL",
                        f"{readable}/{n} parquets readable in {monthly_dir}")
     return _status(label, "OK", f"{n:,} monthly parquets — {monthly_dir}")
+
+
+_FC_CHUNK_PAT = re.compile(
+    r"(?P<tag>ifs_fc|aifs_fc)_2t_county_(?P<yr>\d{4})_(?P<mo>\d{2})_lead(?P<lead>\d+)\.parquet$"
+)
+_AN_CHUNK_PAT = re.compile(
+    r"ifs_an_2t_county_(?P<yr>\d{4})_(?P<mo>\d{2})\.parquet$"
+)
+_FC_INIT_FREQ_PER_DAY  = 2   # 12-hourly: 0000Z + 1200Z
+_AN_FREQ_PER_DAY       = 4   # 6-hourly
+
+
+def _unique_time_count(path, col):
+    """Read one column from a parquet and return nunique (0 on error)."""
+    try:
+        tbl = pq.read_table(path, columns=[col])
+        return tbl[col].to_pandas().nunique()
+    except Exception:
+        return 0
+
+
+def check_checkpoint_completeness():
+    """
+    Read the time column from every monthly checkpoint parquet and compare
+    unique counts against the theoretical maximum for that month.
+
+    For fc: one valid_time per init time per lead; init times are 12-hourly
+    → 2 × days_in_month expected.
+    For an: 6-hourly → 4 × days_in_month expected.
+
+    Parquets covering partial date ranges (start/end of the configured window)
+    may legitimately fall below the theoretical maximum, so this is surfaced
+    as PARTIAL rather than MISSING, with re-run instructions.
+    """
+    _THRESHOLD = 0.75  # flag if actual < threshold × expected
+
+    chunks = [
+        # (subdir, pattern, time_col, freq_per_day)
+        ("ifs_fc_monthly",   _FC_CHUNK_PAT, "valid_time", _FC_INIT_FREQ_PER_DAY),
+        ("aifs_fc_monthly",  _FC_CHUNK_PAT, "valid_time", _FC_INIT_FREQ_PER_DAY),
+        ("ifs_an_monthly",   _AN_CHUNK_PAT, "time",       _AN_FREQ_PER_DAY),
+    ]
+
+    incomplete = []
+    total_checked = 0
+
+    for subdir, pat, time_col, freq in chunks:
+        monthly_dir = os.path.join(AGGREGATED_DIR, subdir)
+        if not os.path.isdir(monthly_dir):
+            continue
+        for path in sorted(glob.glob(os.path.join(monthly_dir, "*.parquet"))):
+            m = pat.search(os.path.basename(path))
+            if not m:
+                continue
+            yr, mo = int(m.group("yr")), int(m.group("mo"))
+            days = calendar.monthrange(yr, mo)[1]
+            expected = freq * days
+            actual = _unique_time_count(path, time_col)
+            total_checked += 1
+            if actual < _THRESHOLD * expected:
+                incomplete.append((os.path.basename(path), actual, expected))
+
+    if total_checked == 0:
+        return _status("Checkpoint completeness", "SKIP", "no monthly parquets found")
+    if not incomplete:
+        return _status(
+            "Checkpoint completeness", "OK",
+            f"all {total_checked} monthly parquets meet the ≥{int(_THRESHOLD*100)}% completeness threshold",
+        )
+    detail = (
+        f"{len(incomplete)}/{total_checked} parquet(s) below {int(_THRESHOLD*100)}% complete: "
+        + "; ".join(f"{name} ({act}/{exp})" for name, act, exp in incomplete[:10])
+    )
+    if len(incomplete) > 10:
+        detail += f" … and {len(incomplete) - 10} more"
+    detail += " — re-run aggregate_fc_an_2t.py --verify-checkpoints"
+    return _status("Checkpoint completeness", "PARTIAL", detail)
 
 
 def check_aggregation_outputs():
@@ -584,6 +671,12 @@ def main(argv=None):
     for msg, _ in results:
         print(msg)
     if _missing:
+        any_missing = True
+
+    print("\n-- Checkpoint completeness --")
+    msg, status = check_checkpoint_completeness()
+    print(msg)
+    if status == "PARTIAL":
         any_missing = True
 
     print("\n-- Koppen-Geiger --")
