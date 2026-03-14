@@ -48,6 +48,8 @@ from config import (
     IFS_END         as END,
     LEAD_TIMES,
     WEIGHTMAP_CACHE_DIR,
+    IFS_GRID,
+    AIFS_GRID,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -59,7 +61,13 @@ FC_FREQ  = "12h"
 AN_FREQ  = "6h"
 VAR_NAME = "t2m"
 
-_WEIGHTMAP = None  # set in main(); inherited by forked workers
+_WEIGHTMAPS = {}  # {grid_tag: weightmap}; set in main(); inherited by forked workers
+# Maps stream tag → weightmap key (IFS fc and an share a grid; AIFS fc has its own)
+_TAG_GRID = {
+    "ifs_fc":  "ifs",
+    "ifs_an":  "ifs",
+    "aifs_fc": "aifs",
+}
 
 IFS_FC_MONTHLY_DIR  = os.path.join(SAVE_DIR, "ifs_fc_monthly")
 IFS_AN_MONTHLY_DIR  = os.path.join(SAVE_DIR, "ifs_an_monthly")
@@ -294,12 +302,15 @@ def _write_chunk_atomic(tag, group_key, df):
 def _process_fc_chunk(args):
     """Aggregate one (tag, group_key, files) fc chunk. Returns (tag, group_key, df|None)."""
     tag, group_key, files = args
-    if _WEIGHTMAP is None:
-        raise RuntimeError("Worker has no weightmap; expected forked workers to inherit _WEIGHTMAP.")
+    weightmap = _WEIGHTMAPS.get(_TAG_GRID.get(tag))
+    if weightmap is None:
+        raise RuntimeError(
+            f"No weightmap for tag '{tag}'; expected forked workers to inherit _WEIGHTMAPS."
+        )
     results = []
     for path, init_time, lead_time in files:
         try:
-            df = aggregate_fc_file(path, init_time, lead_time, _WEIGHTMAP, VAR_NAME)
+            df = aggregate_fc_file(path, init_time, lead_time, weightmap, VAR_NAME)
         except Exception as exc:
             logging.warning("Skipping corrupt file %s: %s", path, exc)
             continue
@@ -312,12 +323,15 @@ def _process_fc_chunk(args):
 def _process_an_chunk(args):
     """Aggregate one (tag, group_key, files) an chunk. Returns (tag, group_key, df|None)."""
     tag, group_key, files = args
-    if _WEIGHTMAP is None:
-        raise RuntimeError("Worker has no weightmap; expected forked workers to inherit _WEIGHTMAP.")
+    weightmap = _WEIGHTMAPS.get(_TAG_GRID.get(tag))
+    if weightmap is None:
+        raise RuntimeError(
+            f"No weightmap for tag '{tag}'; expected forked workers to inherit _WEIGHTMAPS."
+        )
     results = []
     for path, time_str in files:
         try:
-            df = aggregate_an_file(path, time_str, _WEIGHTMAP, VAR_NAME)
+            df = aggregate_an_file(path, time_str, weightmap, VAR_NAME)
         except Exception as exc:
             logging.warning("Skipping corrupt file %s: %s", path, exc)
             continue
@@ -433,7 +447,6 @@ def _consolidate(tag, output_path):
 def main(n_parallel=1, write_full_tables=False):
     t_start = time.time()
     logging.info("=== aggregate_fc_an_2t.py | start %s ===", time.strftime("%Y-%m-%d %H:%M:%S"))
-    global _WEIGHTMAP
 
     os.makedirs(SAVE_DIR, exist_ok=True)
     os.makedirs(IFS_FC_MONTHLY_DIR, exist_ok=True)
@@ -464,13 +477,23 @@ def main(n_parallel=1, write_full_tables=False):
         logging.warning("No files found; exiting")
         return
 
-    # 3. Build weightmap once (shared across all three streams)
-    grid_path = (fc_files_ifs or fc_files_aifs)[0][0]
-    logging.info("Building weightmap ...")
-    _WEIGHTMAP = wxagg.GeoAggregator(
-        shapefile_path=SHAPEFILE_PATH, grid_path=grid_path,
-        silent=True, cache_dir=WEIGHTMAP_CACHE_DIR,
-    ).weightmap
+    # 3. Build one weightmap per grid resolution (IFS=0.125°, AIFS=0.25°)
+    global _WEIGHTMAPS
+    _WEIGHTMAPS = {}
+    if fc_files_ifs or an_files:
+        ifs_grid_path = (fc_files_ifs or an_files)[0][0]
+        logging.info("Building IFS weightmap (%s° grid) ...", IFS_GRID)
+        _WEIGHTMAPS["ifs"] = wxagg.GeoAggregator(
+            shapefile_path=SHAPEFILE_PATH, grid_path=ifs_grid_path,
+            silent=True, cache_dir=WEIGHTMAP_CACHE_DIR,
+        ).weightmap
+    if fc_files_aifs:
+        aifs_grid_path = fc_files_aifs[0][0]
+        logging.info("Building AIFS weightmap (%s° grid) ...", AIFS_GRID)
+        _WEIGHTMAPS["aifs"] = wxagg.GeoAggregator(
+            shapefile_path=SHAPEFILE_PATH, grid_path=aifs_grid_path,
+            silent=True, cache_dir=WEIGHTMAP_CACHE_DIR,
+        ).weightmap
 
     # 4. Build unified chunk list (IFS fc + IFS an + AIFS fc)
     ifs_fc_chunks  = [("ifs_fc",  k, f) for k, f in _group_fc_by_lead_month(fc_files_ifs)]
