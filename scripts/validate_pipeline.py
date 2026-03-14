@@ -14,7 +14,9 @@ import os
 import sys
 import argparse
 import glob
+import re
 import subprocess
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pyarrow.parquet as pq
@@ -362,6 +364,38 @@ def _check_nc_content(path, expected_var):
     return True, ""
 
 
+def _checkpoint_paths_for_bad_files(bad_paths):
+    """
+    Given a list of bad .nc source file paths, return the set of monthly
+    checkpoint parquet paths that were built (at least partly) from them.
+
+    File name patterns:
+        ifs_fc_2t_{HHMM}_{lead}_{YYYYMMDD}.nc
+        aifs_fc_2t_{HHMM}_{lead}_{YYYYMMDD}.nc
+
+    Chunk key is (lead_time, valid_time.year, valid_time.month) where
+    valid_time = init_time + lead_time hours — matching _group_fc_by_lead_month.
+    """
+    _FC_PAT = re.compile(
+        r"(?P<tag>ifs|aifs)_fc_2t_(?P<hhmm>\d{4})_(?P<lead>\d+)_(?P<date>\d{8})\.nc$"
+    )
+    affected = set()
+    for path in bad_paths:
+        m = _FC_PAT.search(os.path.basename(path))
+        if not m:
+            continue
+        tag   = m.group("tag")
+        hh    = int(m.group("hhmm")[:2])
+        lead  = int(m.group("lead"))
+        init  = datetime.strptime(m.group("date"), "%Y%m%d").replace(hour=hh)
+        vt    = init + timedelta(hours=lead)
+        subdir = f"{tag}_fc_monthly"
+        stem   = f"{tag}_fc_2t_county"
+        fname  = f"{stem}_{vt.year}_{vt.month:02d}_lead{lead:03d}.parquet"
+        affected.add(os.path.join(AGGREGATED_DIR, subdir, fname))
+    return affected
+
+
 def check_nc_content(remove_bad=False, max_failures_shown=20):
     """
     Open every .nc file in each download directory with xarray and verify the
@@ -409,11 +443,26 @@ def check_nc_content(remove_bad=False, max_failures_shown=20):
         n_total, n_fail = len(nc_files), len(failures)
 
         if remove_bad and failures:
-            for path, _ in failures:
+            bad_paths = [p for p, _ in failures]
+            for path in bad_paths:
                 try:
                     os.remove(path)
                 except OSError as exc:
                     print(f"    WARNING: could not delete {path}: {exc}")
+            # Invalidate monthly checkpoint parquets built from these files
+            # so aggregate_fc_an_2t.py re-processes the affected chunks.
+            checkpoints = _checkpoint_paths_for_bad_files(bad_paths)
+            n_ckpt_removed = 0
+            for ckpt in sorted(checkpoints):
+                if os.path.exists(ckpt):
+                    try:
+                        os.remove(ckpt)
+                        n_ckpt_removed += 1
+                    except OSError as exc:
+                        print(f"    WARNING: could not delete checkpoint {ckpt}: {exc}")
+            if checkpoints:
+                print(f"    Invalidated {n_ckpt_removed}/{len(checkpoints)} "
+                      f"monthly checkpoint parquet(s) — re-run aggregate_fc_an_2t.py")
 
         if n_fail == 0:
             results.append(_status(
