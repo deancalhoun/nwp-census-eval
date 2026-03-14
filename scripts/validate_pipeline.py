@@ -362,14 +362,13 @@ def _check_nc_content(path, expected_var):
     return True, ""
 
 
-def check_nc_content_sample(n_sample=5):
+def check_nc_content(max_failures_shown=20):
     """
-    Open a random sample of .nc files per download directory with xarray and
-    verify the expected variable ('t2m') and spatial dimensions are present.
-    This catches issues the magic-byte sweep misses (wrong variable name,
-    no spatial dims, etc.) without the cost of a full aggregation run.
+    Open every .nc file in each download directory with xarray and verify the
+    expected variable ('t2m') and spatial dimensions are present. Uses
+    _SWEEP_WORKERS threads in parallel (same as the magic-byte sweep).
+    Reports total failure count and up to max_failures_shown example paths.
     """
-    import random
     dirs = {
         "IFS fc":  (IFS_FC_DIR,  "t2m"),
         "IFS an":  (IFS_AN_DIR,  "t2m"),
@@ -385,22 +384,42 @@ def check_nc_content_sample(n_sample=5):
         if not nc_files:
             results.append(_status(f"{label} content check", "SKIP", "no .nc files found"))
             continue
-        sample = random.sample(nc_files, min(n_sample, len(nc_files)))
-        failures = []
-        for path in sample:
-            ok, reason = _check_nc_content(path, expected_var)
-            if ok is False:
-                failures.append(f"{os.path.basename(path)}: {reason}")
-        if failures:
+
+        try:
+            from tqdm import tqdm
+            bar = tqdm(total=len(nc_files),
+                       desc=f"  content {os.path.basename(directory)}",
+                       unit="file", leave=False)
+        except ImportError:
+            bar = None
+
+        failures = []  # list of (path, reason)
+        with ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
+            futures = {pool.submit(_check_nc_content, p, expected_var): p for p in nc_files}
+            for fut in as_completed(futures):
+                ok, reason = fut.result()
+                if ok is False:
+                    failures.append((futures[fut], reason))
+                if bar:
+                    bar.update(1)
+        if bar:
+            bar.close()
+
+        n_total, n_fail = len(nc_files), len(failures)
+        if n_fail == 0:
             results.append(_status(
-                f"{label} content check ({len(sample)} sampled)", "PARTIAL",
-                "; ".join(failures),
+                f"{label} content check ({n_total:,} files)", "OK",
+                f"variable '{expected_var}' present with spatial dims in all files",
             ))
         else:
-            results.append(_status(
-                f"{label} content check ({len(sample)} sampled)", "OK",
-                f"variable '{expected_var}' present with spatial dims in all sampled files",
-            ))
+            shown = failures[:max_failures_shown]
+            detail = f"{n_fail:,}/{n_total:,} files failed"
+            if n_fail > max_failures_shown:
+                detail += f" (showing first {max_failures_shown})"
+            detail += ": " + "; ".join(
+                f"{os.path.basename(p)}: {r}" for p, r in shown
+            )
+            results.append(_status(f"{label} content check ({n_total:,} files)", "PARTIAL", detail))
     return results
 
 
@@ -473,7 +492,7 @@ def main(argv=None):
     parser.add_argument(
         "--content-check",
         action="store_true",
-        help="Open a sample of .nc files with xarray and verify variable/grid content.",
+        help="Open every .nc file with xarray and verify variable/grid content (parallel, slow on large trees).",
     )
     args = parser.parse_args(argv)
     run_nc_sweep = args.nc_sweep or args.fix_grib or args.remove_corrupt
@@ -519,9 +538,9 @@ def main(argv=None):
     else:
         print(_status(".nc file sweep", "SKIP", "pass --nc-sweep to enable")[0])
 
-    print("\n-- .nc file content check (xarray variable/grid) --")
+    print("\n-- .nc file content check (xarray variable/grid, all files) --")
     if args.content_check:
-        for msg, _ in check_nc_content_sample():
+        for msg, _ in check_nc_content():
             print(msg)
     else:
         print(_status(".nc content check", "SKIP", "pass --content-check to enable")[0])
