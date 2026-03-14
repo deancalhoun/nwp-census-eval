@@ -312,7 +312,7 @@ def _process_fc_chunk(args):
         try:
             df = aggregate_fc_file(path, init_time, lead_time, weightmap, VAR_NAME)
         except Exception as exc:
-            logging.warning("Skipping corrupt file %s: %s", path, exc)
+            logging.warning("Skipping %s [%s]: %s", path, type(exc).__name__, exc)
             continue
         results.append(df)
     if not results:
@@ -333,7 +333,7 @@ def _process_an_chunk(args):
         try:
             df = aggregate_an_file(path, time_str, weightmap, VAR_NAME)
         except Exception as exc:
-            logging.warning("Skipping corrupt file %s: %s", path, exc)
+            logging.warning("Skipping %s [%s]: %s", path, type(exc).__name__, exc)
             continue
         results.append(df)
     if not results:

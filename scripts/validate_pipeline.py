@@ -337,6 +337,74 @@ def check_grib_nc_files(fix=False, remove_corrupt=False):
 
 
 # ---------------------------------------------------------------------------
+# NetCDF content check (xarray open + variable/grid sanity)
+# ---------------------------------------------------------------------------
+def _check_nc_content(path, expected_var):
+    """
+    Try to open a NetCDF with xarray and confirm expected_var is present and
+    has lat/lon (or latitude/longitude) dimensions. Returns (ok, reason).
+    """
+    try:
+        import xarray as xr
+    except ImportError:
+        return None, "xarray not available"
+    try:
+        with xr.open_dataset(path) as ds:
+            vars_present = set(ds.data_vars) | set(ds.coords)
+            if expected_var not in vars_present:
+                return False, f"variable '{expected_var}' not found (have: {sorted(vars_present)})"
+            dims = set(ds.dims)
+            spatial = dims & {"lat", "lon", "latitude", "longitude", "x", "y"}
+            if len(spatial) < 2:
+                return False, f"fewer than 2 spatial dims (dims: {sorted(dims)})"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, ""
+
+
+def check_nc_content_sample(n_sample=5):
+    """
+    Open a random sample of .nc files per download directory with xarray and
+    verify the expected variable ('t2m') and spatial dimensions are present.
+    This catches issues the magic-byte sweep misses (wrong variable name,
+    no spatial dims, etc.) without the cost of a full aggregation run.
+    """
+    import random
+    dirs = {
+        "IFS fc":  (IFS_FC_DIR,  "2t"),
+        "IFS an":  (IFS_AN_DIR,  "2t"),
+        "AIFS fc": (AIFS_FC_DIR, "2t"),
+    }
+    results = []
+    for label, (directory, expected_var) in dirs.items():
+        if not os.path.isdir(directory):
+            results.append(_status(f"{label} content check", "SKIP",
+                                   f"directory not found: {directory}"))
+            continue
+        nc_files = glob.glob(os.path.join(directory, "**", "*.nc"), recursive=True)
+        if not nc_files:
+            results.append(_status(f"{label} content check", "SKIP", "no .nc files found"))
+            continue
+        sample = random.sample(nc_files, min(n_sample, len(nc_files)))
+        failures = []
+        for path in sample:
+            ok, reason = _check_nc_content(path, expected_var)
+            if ok is False:
+                failures.append(f"{os.path.basename(path)}: {reason}")
+        if failures:
+            results.append(_status(
+                f"{label} content check ({len(sample)} sampled)", "PARTIAL",
+                "; ".join(failures),
+            ))
+        else:
+            results.append(_status(
+                f"{label} content check ({len(sample)} sampled)", "OK",
+                f"variable '{expected_var}' present with spatial dims in all sampled files",
+            ))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Download directory check
 # ---------------------------------------------------------------------------
 def check_downloads():
@@ -402,6 +470,11 @@ def main(argv=None):
         action="store_true",
         help="Delete corrupt .nc files so they can be re-downloaded (implies --nc-sweep).",
     )
+    parser.add_argument(
+        "--content-check",
+        action="store_true",
+        help="Open a sample of .nc files with xarray and verify variable/grid content.",
+    )
     args = parser.parse_args(argv)
     run_nc_sweep = args.nc_sweep or args.fix_grib or args.remove_corrupt
 
@@ -439,12 +512,19 @@ def main(argv=None):
     if status == "MISSING":
         any_missing = True
 
-    print("\n-- .nc file format sweep --")
+    print("\n-- .nc file format sweep (magic bytes) --")
     if run_nc_sweep:
         for msg, _ in check_grib_nc_files(fix=args.fix_grib, remove_corrupt=args.remove_corrupt):
             print(msg)
     else:
         print(_status(".nc file sweep", "SKIP", "pass --nc-sweep to enable")[0])
+
+    print("\n-- .nc file content check (xarray variable/grid) --")
+    if args.content_check:
+        for msg, _ in check_nc_content_sample():
+            print(msg)
+    else:
+        print(_status(".nc content check", "SKIP", "pass --content-check to enable")[0])
 
     print("\n-- IFS/AIFS downloads --")
     if args.check_downloads:
