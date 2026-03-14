@@ -187,7 +187,7 @@ def check_checkpoint_completeness():
     may legitimately fall below the theoretical maximum, so this is surfaced
     as PARTIAL rather than MISSING, with re-run instructions.
     """
-    _THRESHOLD = 0.95  # flag if actual < threshold × expected
+    _THRESHOLD = 0.99  # flag if actual < threshold × expected
 
     chunks = [
         # (subdir, pattern, time_col, freq_per_day)
