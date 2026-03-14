@@ -1,11 +1,11 @@
 """
-analysis/figures/ifs_vs_aifs.py — IFS vs AIFS comparison panels.
+scripts/figures/ifs_vs_aifs.py — IFS vs AIFS comparison panels.
 
 Produces a multi-panel figure showing IFS vs AIFS mean bias and RMSE by
 lead time, aggregated across all counties (area-weighted). Writes PDF + SVG.
 
 Usage:
-    python analysis/figures/ifs_vs_aifs.py
+    python scripts/figures/ifs_vs_aifs.py
 """
 
 import os
@@ -15,9 +15,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from nwp_census_eval.db import PipelineDB
 
-OUT_DIR = os.path.join(os.path.dirname(__file__))
+OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "notebooks", "figures")
 
 
 def load_comparison_stats():
@@ -73,6 +74,7 @@ def main():
 
     fig.suptitle("IFS vs AIFS 2m temperature forecast verification", fontsize=13)
 
+    os.makedirs(OUT_DIR, exist_ok=True)
     for ext in ("pdf", "svg"):
         path = os.path.join(OUT_DIR, f"ifs_vs_aifs.{ext}")
         fig.savefig(path, bbox_inches="tight", dpi=150)

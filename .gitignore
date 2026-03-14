@@ -149,3 +149,7 @@ dmypy.json
 
 # PBS
 *.pbs
+
+# Notebook derived outputs (model intermediates and figures)
+notebooks/data/
+notebooks/figures/

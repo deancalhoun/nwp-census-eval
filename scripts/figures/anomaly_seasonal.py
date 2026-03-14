@@ -1,11 +1,11 @@
 """
-analysis/figures/anomaly_seasonal.py — Seasonal anomaly heatmaps.
+scripts/figures/anomaly_seasonal.py — Seasonal anomaly heatmaps.
 
 Produces heatmaps of mean forecast and analysis anomaly by month × lead time,
 aggregated across all counties (area-weighted). Writes PDF + SVG.
 
 Usage:
-    python analysis/figures/anomaly_seasonal.py --model ifs
+    python scripts/figures/anomaly_seasonal.py --model ifs
 """
 
 import argparse
@@ -17,9 +17,10 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from nwp_census_eval.db import PipelineDB
 
-OUT_DIR = os.path.join(os.path.dirname(__file__))
+OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "notebooks", "figures")
 
 MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -79,6 +80,7 @@ def main(argv=None):
     fig.colorbar(im, ax=axes, label="Anomaly (K)", shrink=0.8)
     fig.suptitle(f"{args.model.upper()} 2m temperature anomaly vs ERA5 climatology", fontsize=13)
 
+    os.makedirs(OUT_DIR, exist_ok=True)
     out_prefix = f"anomaly_seasonal_{args.model}"
     for ext in ("pdf", "svg"):
         path = os.path.join(OUT_DIR, f"{out_prefix}.{ext}")

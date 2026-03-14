@@ -1,12 +1,12 @@
 """
-analysis/figures/bias_map.py — County-level mean bias choropleth.
+scripts/figures/bias_map.py — County-level mean bias choropleth.
 
 Produces a publication-quality choropleth map of IFS or AIFS mean 2m
 temperature forecast bias at the US county level. Writes PDF + SVG.
 
 Usage:
-    python analysis/figures/bias_map.py --model ifs --lead 24
-    python analysis/figures/bias_map.py --model aifs --lead 48 --start 2024-01-01
+    python scripts/figures/bias_map.py --model ifs --lead 24
+    python scripts/figures/bias_map.py --model aifs --lead 48 --start 2024-01-01
 """
 
 import argparse
@@ -18,9 +18,10 @@ import matplotlib.colors as mcolors
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from nwp_census_eval.db import PipelineDB
 
-OUT_DIR = os.path.join(os.path.dirname(__file__))
+OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "notebooks", "figures")
 
 
 def load_mean_bias(model, lead_time, start=None, end=None):
@@ -91,6 +92,7 @@ def main(argv=None):
     if args.start or args.end:
         title += f"\n{args.start or ''} to {args.end or ''}"
 
+    os.makedirs(OUT_DIR, exist_ok=True)
     out_prefix = f"bias_map_{args.model}_lead{args.lead}h"
     make_choropleth(gdf, title=title, out_prefix=out_prefix)
 

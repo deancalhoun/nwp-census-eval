@@ -1,12 +1,12 @@
 """
-analysis/figures/demographic_scatter.py — Bias vs demographic vulnerability scatter.
+scripts/figures/demographic_scatter.py — Bias vs demographic vulnerability scatter.
 
 Plots county-level mean forecast bias against a composite or individual
 demographic vulnerability index. Each point is a county, coloured by
 Koppen-Geiger climate zone. Writes PDF + SVG.
 
 Usage:
-    python analysis/figures/demographic_scatter.py --model ifs --lead 24
+    python scripts/figures/demographic_scatter.py --model ifs --lead 24
 """
 
 import argparse
@@ -18,9 +18,10 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from nwp_census_eval.db import PipelineDB
 
-OUT_DIR = os.path.join(os.path.dirname(__file__))
+OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "notebooks", "figures")
 
 
 def load_data(model, lead_time):
@@ -72,6 +73,7 @@ def main(argv=None):
         fontsize=12,
     )
 
+    os.makedirs(OUT_DIR, exist_ok=True)
     out_prefix = f"demographic_scatter_{args.model}_lead{args.lead}h"
     for ext in ("pdf", "svg"):
         path = os.path.join(OUT_DIR, f"{out_prefix}.{ext}")

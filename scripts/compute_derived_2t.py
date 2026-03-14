@@ -352,44 +352,73 @@ def compute_aifs(area_weights, clim, bias_path, anom_path, force=False):
 
 
 def compute_comparison(ifs_bias_path, aifs_bias_path, area_weights, compare_path, force=False):
-    """Build month-by-month AIFS vs IFS comparison on common (geo_id, valid_time, lead_time)."""
+    """Build month-by-month AIFS vs IFS comparison on common (geo_id, valid_time, lead_time).
+
+    Derives bias inline from monthly fc/an checkpoint parquets — peak memory is one
+    month across all lead times (~tens of MB). ifs_bias_path and aifs_bias_path are
+    kept for backward compatibility but are not read.
+    """
     if not force and _is_valid_parquet(compare_path):
         logging.info("Comparison table already exists; skipping (use --force to recompute).")
         return
-    if not _is_valid_parquet(ifs_bias_path) or not _is_valid_parquet(aifs_bias_path):
-        logging.warning("IFS or AIFS bias tables not found; skipping comparison.")
+
+    months = _an_months(IFS_AN_MONTHLY_DIR)
+    if not months:
+        logging.warning("No IFS an monthly parquets found; skipping comparison.")
         return
 
-    logging.info("Building AIFS vs IFS comparison table ...")
+    logging.info("Building AIFS vs IFS comparison table for %d months ...", len(months))
     t0 = time.time()
 
-    # Read both bias tables and merge on (geo_id, valid_time, lead_time)
-    # Load month-by-month via row groups would be ideal, but bias tables aren't
-    # partitioned by month. Read in chunked batches via pyarrow instead.
-    ifs_bias  = pq.read_table(ifs_bias_path,
-                               columns=["geo_id", "valid_time", "lead_time", "bias", "abs_error"])
-    aifs_bias = pq.read_table(aifs_bias_path,
-                               columns=["geo_id", "valid_time", "lead_time", "bias", "abs_error"])
+    comp_w = _StreamingWriter(compare_path)
+    try:
+        for yr, mo in months:
+            df_an      = _load_an_month(IFS_AN_MONTHLY_DIR,  yr, mo)
+            df_ifs_fc  = _load_fc_month(IFS_FC_MONTHLY_DIR,  "ifs_fc_2t_county",  yr, mo)
+            df_aifs_fc = _load_fc_month(AIFS_FC_MONTHLY_DIR, "aifs_fc_2t_county", yr, mo)
+            if df_an is None or df_ifs_fc is None or df_aifs_fc is None:
+                continue
 
-    df_ifs  = ifs_bias.to_pandas().rename(columns={"bias": "bias_ifs",
-                                                    "abs_error": "abs_error_ifs"})
-    df_aifs = aifs_bias.to_pandas().rename(columns={"bias": "bias_aifs",
-                                                     "abs_error": "abs_error_aifs"})
+            df_an_vt = df_an.rename(columns={"time": "valid_time"})
 
-    key = ["geo_id", "valid_time", "lead_time"]
-    df = pd.merge(df_ifs, df_aifs, on=key, how="inner")
-    df["bias_diff"]        = df["bias_aifs"]      - df["bias_ifs"]
-    df["abs_error_diff"]   = df["abs_error_aifs"] - df["abs_error_ifs"]
-    df = df.merge(area_weights, on="geo_id", how="left")
+            # IFS bias
+            df_ifs = pd.merge(df_ifs_fc, df_an_vt, on=["geo_id", "valid_time"], how="inner")
+            df_ifs = df_ifs.rename(columns={VAR_NAME + "_x": f"{VAR_NAME}_fc",
+                                            VAR_NAME + "_y": f"{VAR_NAME}_an"})
+            if f"{VAR_NAME}_fc" not in df_ifs.columns:
+                continue
+            df_ifs["bias_ifs"]      = df_ifs[f"{VAR_NAME}_fc"] - df_ifs[f"{VAR_NAME}_an"]
+            df_ifs["abs_error_ifs"] = df_ifs["bias_ifs"].abs()
+            df_ifs = df_ifs[["geo_id", "valid_time", "lead_time", "bias_ifs", "abs_error_ifs"]]
 
-    keep = [c for c in _COMPARE_COLS if c in df.columns]
-    df = df[keep]
+            # AIFS bias
+            df_aifs = pd.merge(df_aifs_fc, df_an_vt, on=["geo_id", "valid_time"], how="inner")
+            df_aifs = df_aifs.rename(columns={VAR_NAME + "_x": f"{VAR_NAME}_fc",
+                                              VAR_NAME + "_y": f"{VAR_NAME}_an"})
+            if f"{VAR_NAME}_fc" not in df_aifs.columns:
+                continue
+            df_aifs["bias_aifs"]      = df_aifs[f"{VAR_NAME}_fc"] - df_aifs[f"{VAR_NAME}_an"]
+            df_aifs["abs_error_aifs"] = df_aifs["bias_aifs"].abs()
+            df_aifs = df_aifs[["geo_id", "valid_time", "lead_time", "bias_aifs", "abs_error_aifs"]]
 
-    tmp = compare_path + ".tmp"
-    df.to_parquet(tmp, index=False)
-    os.replace(tmp, compare_path)
-    _write_metadata("aifs_vs_ifs_fc_bias_comparison_2t_county", compare_path)
-    logging.info("[%.0fs] Comparison table: %d rows → %s", time.time() - t0, len(df), compare_path)
+            # Merge on common keys and compute diff columns
+            key = ["geo_id", "valid_time", "lead_time"]
+            df = pd.merge(df_ifs, df_aifs, on=key, how="inner")
+            df["bias_diff"]      = df["bias_aifs"]      - df["bias_ifs"]
+            df["abs_error_diff"] = df["abs_error_aifs"] - df["abs_error_ifs"]
+            df = df.merge(area_weights, on="geo_id", how="left")
+
+            keep = [c for c in _COMPARE_COLS if c in df.columns]
+            comp_w.write(df[keep])
+    except Exception:
+        if comp_w._writer:
+            comp_w._writer.close()
+        if os.path.exists(comp_w.tmp):
+            os.remove(comp_w.tmp)
+        raise
+
+    comp_w.close("aifs_vs_ifs_fc_bias_comparison_2t_county")
+    logging.info("[%.0fs] Comparison table complete.", time.time() - t0)
 
 
 # ---------------------------------------------------------------------------

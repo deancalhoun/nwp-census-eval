@@ -2,18 +2,24 @@
 scripts/run_pipeline.py — Unified pipeline entry point.
 
 Steps (in dependency order):
-  download        download_fc_an_2t.py   — ECMWF IFS/AIFS forecast + analysis data
-  aggregate-era5  aggregate_era5_2t.py   — ERA5 county aggregation + climatology
-  aggregate-fc    aggregate_fc_an_2t.py  — IFS/AIFS raw spatial aggregation (monthly parquets)
-  compute-derived compute_derived_2t.py  — bias, anomaly, and comparison tables
-  koppen          aggregate_koppen.py    — Koppen-Geiger county classification
-  acs             download_acs.py        — Census ACS data
-  validate        validate_pipeline.py   — pipeline status report
+  download        download_fc_an_2t.py        — ECMWF IFS/AIFS forecast + analysis data
+  aggregate-era5  aggregate_era5_2t.py        — ERA5 county aggregation + climatology
+  aggregate-fc    aggregate_fc_an_2t.py       — IFS/AIFS raw spatial aggregation (monthly parquets)
+  compute-derived compute_derived_2t.py       — bias, anomaly, and comparison tables
+  koppen          aggregate_koppen.py         — Koppen-Geiger county classification
+  acs             download_acs.py             — Census ACS data
+  validate        validate_pipeline.py        — pipeline status report
+  figures         figures/run_figures.py      — publication figure scripts
+
+Note: the BYM2 spatial model (scripts/run_bym2.py) is NOT a pipeline step because it
+requires notebooks/01–03 to have been run first (produces model_input.parquet and
+adjacency files). Run it manually after completing those notebooks.
 
 Usage:
   python scripts/run_pipeline.py                         # all steps
   python scripts/run_pipeline.py --steps aggregate-era5 aggregate-fc
   python scripts/run_pipeline.py --steps aggregate-fc -- --n-parallel 8
+  python scripts/run_pipeline.py --steps figures
 """
 import argparse
 import os
@@ -29,6 +35,7 @@ STEPS = [
     ("koppen",          "aggregate_koppen.py"),
     ("acs",             "download_acs.py"),
     ("validate",        "validate_pipeline.py"),
+    ("figures",         "figures/run_figures.py"),
 ]
 STEP_NAMES = [s[0] for s in STEPS]
 STEP_MAP   = dict(STEPS)
