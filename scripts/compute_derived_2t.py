@@ -212,7 +212,9 @@ def _derive_month(df_fc, df_an, clim, area_weights, var_name):
     if clim is None:
         return df_bias, None
     df_a = df_bias.copy()
-    df_a["day_of_year"] = pd.to_datetime(df_a["valid_time"]).dt.dayofyear
+    _dt = pd.to_datetime(df_a["valid_time"])
+    df_a["day_of_year"] = (_dt.dt.dayofyear
+                           - (_dt.dt.is_leap_year & (_dt.dt.month > 2)).astype(int))
     df_a = df_a.merge(clim[["geo_id", "day_of_year", f"{var_name}_clim"]],
                       on=["geo_id", "day_of_year"], how="inner")
     df_a["fc_anom"] = df_a[f"{var_name}_fc"] - df_a[f"{var_name}_clim"]

@@ -254,7 +254,9 @@ def _compute_clim_incremental(months):
                 logging.warning("Month %d-%02d parquet missing; excluded from climatology", yr, mo)
                 continue
             df = pd.read_parquet(path)
-            df['day_of_year'] = pd.to_datetime(df['time']).dt.dayofyear
+            _dt = pd.to_datetime(df['time'])
+            df['day_of_year'] = (_dt.dt.dayofyear
+                                 - (_dt.dt.is_leap_year & (_dt.dt.month > 2)).astype(int))
             grp = df.groupby(['geo_id', 'day_of_year'])[VAR_NAME]
             s = grp.sum()
             c = grp.count()
