@@ -371,9 +371,9 @@ def check_nc_content_sample(n_sample=5):
     """
     import random
     dirs = {
-        "IFS fc":  (IFS_FC_DIR,  "2t"),
-        "IFS an":  (IFS_AN_DIR,  "2t"),
-        "AIFS fc": (AIFS_FC_DIR, "2t"),
+        "IFS fc":  (IFS_FC_DIR,  "t2m"),
+        "IFS an":  (IFS_AN_DIR,  "t2m"),
+        "AIFS fc": (AIFS_FC_DIR, "t2m"),
     }
     results = []
     for label, (directory, expected_var) in dirs.items():
