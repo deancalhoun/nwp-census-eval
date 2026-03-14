@@ -16,6 +16,7 @@ completed chunk.
 Usage:
   python scripts/aggregate_fc_an_2t.py [--n-parallel N] [--write-full-tables]
   python scripts/aggregate_fc_an_2t.py --start 2024-01-01 --end 2024-12-31
+  python scripts/aggregate_fc_an_2t.py --verify-checkpoints   # scan + re-run incomplete
 """
 
 import os
@@ -296,6 +297,47 @@ def _write_chunk_atomic(tag, group_key, df):
     logging.info("Checkpoint: %s (%d rows)", os.path.basename(path), len(df))
 
 
+def _count_unique_times(path, tag):
+    """Return number of unique time values in a checkpoint parquet (0 on error)."""
+    col = "time" if tag == "ifs_an" else "valid_time"
+    try:
+        tbl = pq.read_table(path, columns=[col])
+        return tbl[col].to_pandas().nunique()
+    except Exception:
+        return 0
+
+
+def _invalidate_incomplete_chunks(all_chunks):
+    """Delete checkpoint parquets whose unique-time count is less than the source file count."""
+    n_checked = n_invalidated = 0
+    for tag, group_key, files in all_chunks:
+        if tag in ("ifs_fc", "aifs_fc"):
+            lead, yr, mo = group_key
+            path = _chunk_path(tag, yr, mo, lead=lead)
+        else:
+            yr, mo = group_key
+            path = _chunk_path(tag, yr, mo)
+        if not os.path.exists(path):
+            continue
+        n_checked += 1
+        expected = len(files)
+        actual = _count_unique_times(path, tag)
+        if actual < expected:
+            logging.info(
+                "Incomplete checkpoint %s (%d/%d times) — invalidating",
+                os.path.basename(path), actual, expected,
+            )
+            try:
+                os.remove(path)
+                n_invalidated += 1
+            except OSError as exc:
+                logging.warning("Could not remove %s: %s", path, exc)
+    logging.info(
+        "Checkpoint verification: %d checked, %d incomplete and invalidated",
+        n_checked, n_invalidated,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Workers (forked; silent — progress tracked in main process)
 # ---------------------------------------------------------------------------
@@ -352,8 +394,11 @@ def _process_chunk(args):
 # ---------------------------------------------------------------------------
 # Aggregation driver
 # ---------------------------------------------------------------------------
-def _run_all(all_chunks, n_parallel):
+def _run_all(all_chunks, n_parallel, verify=False):
     """Process all (tag, group_key, files) chunks; write each to its monthly parquet."""
+    if verify:
+        logging.info("-- Verifying existing checkpoints for completeness --")
+        _invalidate_incomplete_chunks(all_chunks)
     pending = [c for c in all_chunks if not _is_chunk_done(c[0], c[1])]
     n_done = len(all_chunks) - len(pending)
     logging.info(
@@ -444,7 +489,7 @@ def _consolidate(tag, output_path):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main(n_parallel=1, write_full_tables=False):
+def main(n_parallel=1, write_full_tables=False, verify=False):
     t_start = time.time()
     logging.info("=== aggregate_fc_an_2t.py | start %s ===", time.strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -507,7 +552,7 @@ def main(n_parallel=1, write_full_tables=False):
 
     # 5. Aggregate all three streams in one shared pool
     t_agg = time.time()
-    _run_all(all_chunks, n_parallel)
+    _run_all(all_chunks, n_parallel, verify=verify)
     logging.info("[%.0fs] Aggregation complete", time.time() - t_agg)
 
     # 6. Optional: consolidate monthly parquets into single tables
@@ -543,6 +588,14 @@ if __name__ == "__main__":
         "--write-full-tables", action="store_true",
         help="Consolidate monthly parquets into single per-model parquets after aggregation.",
     )
+    parser.add_argument(
+        "--verify-checkpoints", action="store_true",
+        help=(
+            "Before aggregating, scan all existing checkpoint parquets and delete any whose "
+            "unique-time count is less than the number of source files in that chunk. "
+            "Incomplete checkpoints will then be re-aggregated in the normal pass."
+        ),
+    )
     args = parser.parse_args()
 
     START      = args.start
@@ -551,4 +604,8 @@ if __name__ == "__main__":
     AN_FREQ    = args.an_freq
     LEAD_TIMES = args.lead_times
 
-    main(n_parallel=args.n_parallel, write_full_tables=args.write_full_tables)
+    main(
+        n_parallel=args.n_parallel,
+        write_full_tables=args.write_full_tables,
+        verify=args.verify_checkpoints,
+    )
