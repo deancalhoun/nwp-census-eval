@@ -287,11 +287,6 @@ def compute_ifs(area_weights, clim, bias_path, anom_path, force=False):
     logging.info("Computing IFS bias and anomaly for %d months ...", len(months))
     t0 = time.time()
 
-    with _StreamingWriter(bias_path) as bias_w, _StreamingWriter(anom_path) as anom_w:
-        bias_w.__enter__()
-        anom_w.__enter__()
-
-    # Reopen properly (context manager used for cleanup only above)
     bias_w = _StreamingWriter(bias_path)
     anom_w = _StreamingWriter(anom_path)
     try:

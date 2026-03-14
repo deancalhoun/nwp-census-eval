@@ -52,7 +52,10 @@ _VIEWS = {
     "koppen":      "koppen_geiger_county.parquet",
 }
 
-_ERA5_MONTHLY_GLOB = "era5_monthly/era5_2t_county_*.parquet"
+_ERA5_MONTHLY_GLOB   = "era5_monthly/era5_2t_county_*.parquet"
+_IFS_FC_MONTHLY_GLOB = "ifs_fc_monthly/ifs_fc_2t_county_*.parquet"
+_IFS_AN_MONTHLY_GLOB = "ifs_an_monthly/ifs_an_2t_county_*.parquet"
+_AIFS_MONTHLY_GLOB   = "aifs_fc_monthly/aifs_fc_2t_county_*.parquet"
 
 
 class PipelineDB:
@@ -90,15 +93,21 @@ class PipelineDB:
                 )
                 self._registered.append(view_name)
 
-        # ERA5 monthly glob (enables querying raw monthly data)
-        monthly_files = sorted(_glob.glob(os.path.join(self._dir, _ERA5_MONTHLY_GLOB)))
-        if monthly_files:
-            paths_sql = ", ".join(f"'{p}'" for p in monthly_files)
-            self._conn.execute(
-                f"CREATE OR REPLACE VIEW era5_monthly AS "
-                f"SELECT * FROM read_parquet([{paths_sql}])"
-            )
-            self._registered.append("era5_monthly")
+        # Monthly glob views (canonical outputs; full consolidated tables are opt-in)
+        for view_name, pattern in [
+            ("era5_monthly",  _ERA5_MONTHLY_GLOB),
+            ("ifs_fc_monthly",  _IFS_FC_MONTHLY_GLOB),
+            ("ifs_an_monthly",  _IFS_AN_MONTHLY_GLOB),
+            ("aifs_fc_monthly", _AIFS_MONTHLY_GLOB),
+        ]:
+            files = sorted(_glob.glob(os.path.join(self._dir, pattern)))
+            if files:
+                paths_sql = ", ".join(f"'{p}'" for p in files)
+                self._conn.execute(
+                    f"CREATE OR REPLACE VIEW {view_name} AS "
+                    f"SELECT * FROM read_parquet([{paths_sql}])"
+                )
+                self._registered.append(view_name)
 
     def registered_views(self) -> List[str]:
         """Return the list of successfully registered view names."""
