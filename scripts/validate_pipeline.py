@@ -131,37 +131,17 @@ def _magic_ok(path):
         return False
 
 
-def _lightweight_ok(path, expected_var):
+def _size_and_magic_ok(path):
     """
-    Fast three-way check for complete directories:
-      1. File size is above minimum (not truncated / empty)
-      2. Magic bytes indicate NetCDF format (not GRIB, not corrupt)
-      3. Expected variable and ≥2 spatial dims present (netCDF4 metadata read, no data load)
-
-    Returns True if the file passes all three checks. Uses netCDF4 directly rather
-    than xarray to minimise overhead on I/O-bound parallel-filesystem reads.
-    Falls back to True (assume OK) if netCDF4 is unavailable.
+    Thread-safe pre-filter: check file size and magic bytes only.
+    Returns False if the file is too small or not NetCDF format.
     """
     try:
         if os.path.getsize(path) < _MIN_NC_BYTES:
             return False
     except OSError:
         return False
-    if not _magic_ok(path):
-        return False
-    try:
-        import netCDF4 as nc4
-        with nc4.Dataset(path, "r") as ds:
-            if expected_var not in ds.variables:
-                return False
-            spatial = set(ds.dimensions) & {"lat", "lon", "latitude", "longitude", "x", "y"}
-            if len(spatial) < 2:
-                return False
-    except ImportError:
-        pass  # netCDF4 not available; magic bytes + size are sufficient fallback
-    except Exception:
-        return False
-    return True
+    return _magic_ok(path)
 
 
 def _content_ok(path, expected_var):
@@ -201,62 +181,59 @@ def _content_ok(path, expected_var):
 #   ifs_an / era5    : (yr, mo)
 
 
-def _check_leaf_dir(directory, expected, expected_var):
-    """Check one leaf directory; run content check on every present .nc file."""
+def _scan_leaf_dir(directory, expected):
+    """
+    Thread-safe pass: enumerate .nc files, check size and magic bytes.
+    Returns {dir_exists, actual, expected, nc_files, suspect} where
+    suspect = files that failed the size or magic-bytes check.
+    No HDF5/xarray calls — safe for concurrent threads.
+    """
     if not os.path.isdir(directory):
-        return {"dir_exists": False, "actual": 0, "expected": expected, "bad": []}
+        return {"dir_exists": False, "actual": 0, "expected": expected,
+                "nc_files": [], "suspect": []}
     nc_files = [
         os.path.join(directory, f)
         for f in os.listdir(directory)
         if f.endswith(".nc")
     ]
-    actual = len(nc_files)
-
-    if actual == expected:
-        # Fast path: lightweight check (size + magic bytes + netCDF4 metadata) on every file.
-        # Avoids the heavier xarray open for directories that look healthy.
-        anomalous = [p for p in nc_files if not _lightweight_ok(p, expected_var)]
-        if not anomalous:
-            return {"dir_exists": True, "actual": actual, "expected": expected, "bad": []}
-        # Some files failed the lightweight check — run full content check on just those
-        # to get a precise reason and confirm they are truly bad.
-        bad = [p for p in anomalous if not _content_ok(p, expected_var)[0]]
-        return {"dir_exists": True, "actual": actual, "expected": expected, "bad": bad}
-
-    # Slow path: dir is incomplete — full content-check every file present.
-    bad = [p for p in nc_files if not _content_ok(p, expected_var)[0]]
-    return {"dir_exists": True, "actual": actual, "expected": expected, "bad": bad}
+    suspect = [p for p in nc_files if not _size_and_magic_ok(p)]
+    return {"dir_exists": True, "actual": len(nc_files), "expected": expected,
+            "nc_files": nc_files, "suspect": suspect}
 
 
 def check_source_files():
     """
-    Phase 1: Check all expected source NC leaf directories using a thread pool.
-    Returns SourceStatus dict.
+    Phase 1: Two-pass source-file check.
+
+    Pass 1 (parallel, thread-safe): directory listing + file-count + size/magic-bytes.
+    Pass 2 (sequential): xarray variable+coord check on files that actually need it:
+        - complete dirs  → only files that failed size/magic (usually zero)
+        - incomplete dirs → all files present (could be wrong-variable partial downloads)
+
+    Keeps HDF5/xarray calls out of the thread pool, which avoids segfaults from
+    HDF5's non-thread-safe global state on some builds.
     """
     source_status = {"ifs_fc": {}, "ifs_an": {}, "aifs_fc": {}, "era5": {}}
-    tasks = []  # (stream, key, directory, expected, expected_var)
+    tasks = []  # (stream, key, directory, expected)
 
     # IFS FC: {IFS_FC_DIR}/{init_hour}/{lead}/{year}/{month:02d}/
     for init_hour in INIT_HOURS:
         for lead in LEAD_TIMES:
             for yr, mo, first, last in _iter_year_months(IFS_START, IFS_END):
                 d = os.path.join(IFS_FC_DIR, init_hour, str(lead), str(yr), f"{mo:02d}")
-                exp = (last - first).days + 1
-                tasks.append(("ifs_fc", (init_hour, lead, yr, mo), d, exp, "t2m"))
+                tasks.append(("ifs_fc", (init_hour, lead, yr, mo), d, (last - first).days + 1))
 
     # AIFS FC: {AIFS_FC_DIR}/{init_hour}/{lead}/{year}/{month:02d}/
     for init_hour in INIT_HOURS:
         for lead in LEAD_TIMES:
             for yr, mo, first, last in _iter_year_months(AIFS_START, AIFS_END):
                 d = os.path.join(AIFS_FC_DIR, init_hour, str(lead), str(yr), f"{mo:02d}")
-                exp = (last - first).days + 1
-                tasks.append(("aifs_fc", (init_hour, lead, yr, mo), d, exp, "t2m"))
+                tasks.append(("aifs_fc", (init_hour, lead, yr, mo), d, (last - first).days + 1))
 
     # IFS AN: {IFS_AN_DIR}/{year}/{month:02d}/
     for yr, mo, first, last in _iter_year_months(IFS_START, IFS_END):
         d = os.path.join(IFS_AN_DIR, str(yr), f"{mo:02d}")
-        exp = (last - first).days + 1
-        tasks.append(("ifs_an", (yr, mo), d, exp, "t2m"))
+        tasks.append(("ifs_an", (yr, mo), d, (last - first).days + 1))
 
     # ERA5: {ERA5_DIR}/{YYYYMM}/
     start_yr = int(ERA5_CLIM_START[:4])
@@ -264,28 +241,69 @@ def check_source_files():
     for yr in range(start_yr, end_yr + 1):
         for mo in range(1, 13):
             d = os.path.join(ERA5_DIR, f"{yr}{mo:02d}")
-            exp = calendar.monthrange(yr, mo)[1]
-            tasks.append(("era5", (yr, mo), d, exp, "t2m"))
+            tasks.append(("era5", (yr, mo), d, calendar.monthrange(yr, mo)[1]))
 
+    # --- Pass 1: parallel directory scan (thread-safe I/O only) ---
     try:
         from tqdm import tqdm
-        bar = tqdm(total=len(tasks), desc="Phase 1: source dirs", unit="dir", leave=False)
+        bar1 = tqdm(total=len(tasks), desc="Phase 1: scanning dirs", unit="dir", leave=False)
     except ImportError:
-        bar = None
+        bar1 = None
 
-    def _run(task):
-        stream, key, directory, expected, expected_var = task
-        return stream, key, _check_leaf_dir(directory, expected, expected_var)
+    raw = {}  # (stream, key) -> scan result
+    def _scan(task):
+        stream, key, directory, expected = task
+        return stream, key, _scan_leaf_dir(directory, expected)
 
     with ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
-        futures = {pool.submit(_run, t): t for t in tasks}
+        futures = {pool.submit(_scan, t): t for t in tasks}
         for fut in as_completed(futures):
             stream, key, result = fut.result()
-            source_status[stream][key] = result
-            if bar:
-                bar.update(1)
-    if bar:
-        bar.close()
+            raw[(stream, key)] = result
+            if bar1:
+                bar1.update(1)
+    if bar1:
+        bar1.close()
+
+    # --- Pass 2: sequential content check (xarray/HDF5, not thread-safe) ---
+    # Complete dirs: only the suspect files (failed size/magic) — usually zero.
+    # Incomplete dirs: all present files (might be partial/wrong-variable downloads).
+    needs_check = []  # (stream, key, path)
+    for (stream, key), info in raw.items():
+        if not info["dir_exists"]:
+            continue
+        if info["actual"] == info["expected"]:
+            for path in info["suspect"]:
+                needs_check.append((stream, key, path))
+        else:
+            for path in info["nc_files"]:
+                needs_check.append((stream, key, path))
+
+    bad_by_key = {}  # (stream, key) -> [bad paths]
+    if needs_check:
+        try:
+            from tqdm import tqdm
+            bar2 = tqdm(total=len(needs_check), desc="Phase 1: content check",
+                        unit="file", leave=False)
+        except ImportError:
+            bar2 = None
+        for stream, key, path in needs_check:
+            ok, _ = _content_ok(path, "t2m")
+            if not ok:
+                bad_by_key.setdefault((stream, key), []).append(path)
+            if bar2:
+                bar2.update(1)
+        if bar2:
+            bar2.close()
+
+    # Assemble final source_status
+    for (stream, key), info in raw.items():
+        source_status[stream][key] = {
+            "dir_exists": info["dir_exists"],
+            "actual":     info["actual"],
+            "expected":   info["expected"],
+            "bad":        bad_by_key.get((stream, key), []),
+        }
 
     return source_status
 
