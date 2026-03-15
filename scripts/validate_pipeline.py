@@ -541,21 +541,27 @@ def _expected_fc_an_parquets():
     expected    = {"ifs_fc_monthly": set(), "aifs_fc_monthly": set(), "ifs_an_monthly": set()}
     exp_times   = {}  # basename -> expected unique valid_time count
 
+    # aggregate_fc_an_2t.py extends END by one freq step so pd.date_range includes
+    # the full last day: fc_end = END + 12h, an_end = END + 18h.
+    # IFS FC alignment clips at the last AN time (END + 18h), not END midnight.
+    ifs_an_end_dt = datetime.strptime(IFS_END, "%Y-%m-%d") + _td(hours=18)
+
     # --- FC streams ---
-    for tag, stem, start_str, end_str, clip_at_end in [
+    for tag, stem, start_str, end_str, clip_at_an_end in [
         ("ifs_fc_monthly",  "ifs_fc_2t_county",  IFS_START,  IFS_END,  True),
         ("aifs_fc_monthly", "aifs_fc_2t_county", AIFS_START, AIFS_END, False),
     ]:
         start  = datetime.strptime(start_str, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_str,   "%Y-%m-%d")  # midnight = pd.date_range end
+        # FC end extended by 12h to include T12 init on last day (matches fc_end in main())
+        end_dt = datetime.strptime(end_str, "%Y-%m-%d") + _td(hours=12)
 
         counts = {}  # (yr, mo, lead) -> n_unique_valid_times
         init_dt = start
-        while init_dt <= end_dt:  # matches pd.date_range(start, end, freq='12h')
+        while init_dt <= end_dt:
             for lead in LEAD_TIMES:
                 vt = init_dt + _td(hours=lead)
-                if clip_at_end and vt > end_dt:
-                    continue  # alignment drops: IFS AN doesn't cover beyond IFS_END
+                if clip_at_an_end and vt > ifs_an_end_dt:
+                    continue  # alignment drops: IFS AN doesn't cover beyond IFS_END+18h
                 k = (vt.year, vt.month, lead)
                 counts[k] = counts.get(k, 0) + 1
             init_dt += _td(hours=12)
@@ -566,13 +572,12 @@ def _expected_fc_an_parquets():
             exp_times[name] = n
 
     # --- IFS AN ---
-    # build_an_files uses pd.date_range(IFS_START, IFS_END, freq='6h'), which
-    # also stops at IFS_END midnight — so the last day only contributes T00.
+    # build_an_files uses an_end = IFS_END + 18h, so Dec 31 contributes all 4
+    # analysis times (T00, T06, T12, T18).
     an_start  = datetime.strptime(IFS_START, "%Y-%m-%d")
-    an_end_dt = datetime.strptime(IFS_END,   "%Y-%m-%d")
     an_counts = {}  # (yr, mo) -> n
     t = an_start
-    while t <= an_end_dt:
+    while t <= ifs_an_end_dt:
         k = (t.year, t.month)
         an_counts[k] = an_counts.get(k, 0) + 1
         t += _td(hours=6)

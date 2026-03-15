@@ -459,11 +459,17 @@ def main(n_parallel=1, write_full_tables=False):
     n_parallel = max(1, int(n_parallel))
 
     # 1. Discover files
+    # Extend END by one step of each frequency so pd.date_range includes the full
+    # last day: without this, date_range(end='2025-12-31', freq='12h') stops at
+    # T00, missing the T12 FC init; date_range at 6h stops at T00, missing
+    # the T06/T12/T18 analysis times on Dec 31.
+    fc_end = pd.Timestamp(END) + pd.Timedelta(hours=12)   # include T12 init on last day
+    an_end = pd.Timestamp(END) + pd.Timedelta(hours=18)   # include T18 analysis on last day
     t_disc = time.time()
     logging.info("Building file lists ...")
-    fc_files_ifs  = build_fc_files(FC_DIR,     START, END, FC_FREQ, LEAD_TIMES)
-    fc_files_aifs = build_fc_files(AIFS_FC_DIR, START, END, FC_FREQ, LEAD_TIMES)
-    an_files      = build_an_files(AN_DIR,      START, END, AN_FREQ)
+    fc_files_ifs  = build_fc_files(FC_DIR,      START, fc_end, FC_FREQ, LEAD_TIMES)
+    fc_files_aifs = build_fc_files(AIFS_FC_DIR, START, fc_end, FC_FREQ, LEAD_TIMES)
+    an_files      = build_an_files(AN_DIR,      START, an_end, AN_FREQ)
     logging.info(
         "[%.0fs] Found %d IFS fc, %d AIFS fc, %d IFS an files",
         time.time() - t_disc, len(fc_files_ifs), len(fc_files_aifs), len(an_files),
