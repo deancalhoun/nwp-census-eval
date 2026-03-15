@@ -19,7 +19,7 @@ import argparse
 import glob
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pyarrow.parquet as pq
 
@@ -554,9 +554,8 @@ def _expected_fc_an_parquets():
 
     # --- IFS AN: one chunk per analysis month ---
     # AN discovery extends to fc_end + max(LEAD_TIMES) to cover all FC valid_times.
-    from datetime import timedelta as _td
     an_end_dt = (datetime.strptime(IFS_END, "%Y-%m-%d")
-                 + _td(hours=12 + max(LEAD_TIMES)))
+                 + timedelta(hours=12 + max(LEAD_TIMES)))
     an_end_str = f"{an_end_dt.year}-{an_end_dt.month:02d}-{an_end_dt.day:02d}"
     for yr, mo, first, last in _iter_year_months(IFS_START, an_end_str):
         days_in_range = (last - first).days + 1
