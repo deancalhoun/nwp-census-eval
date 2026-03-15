@@ -516,25 +516,32 @@ _AN_CHUNK_PAT = re.compile(
 
 def _expected_fc_an_parquets():
     """
-    Return expected parquet filenames (basenames) for each subdir.
+    Return (expected_by_subdir, expected_times) where:
+      expected_by_subdir[subdir_key] = set of expected basename strings
+      expected_times[basename]       = exact expected unique-time count
 
-    FC chunks are named by VALID-TIME month (init + lead), matching
-    aggregate_fc_an_2t.py's _group_fc_by_lead_month.
+    Both are derived from the same init enumeration that aggregate_fc_an_2t.py uses,
+    so boundary months (first/last of date range), long leads at month-end, and
+    alignment clipping at IFS_END are all accounted for correctly.
 
-    Init enumeration mirrors aggregate_fc_an_2t.py's build_fc_files exactly:
+    Init enumeration mirrors build_fc_files exactly:
     pd.date_range(start, end, freq='12h') stops AT end midnight (IFS_END T00),
-    so the last init is IFS_END 00:00, not 12:00. We replicate this with a
-    12h-step loop to get the same set of (vt.year, vt.month, lead) keys.
+    so the last init is IFS_END 00:00, not 12:00.
 
     IFS FC valid-times are clipped at IFS_END because alignment against IFS AN
     (which also stops at IFS_END T00) drops any FC with vt > IFS_END midnight.
 
     AIFS FC is not aligned, so spillover beyond AIFS_END is kept as-is.
+
+    IFS AN: build_an_files uses pd.date_range at 6h stopping at IFS_END T00,
+    so Dec 31 contributes only T00 (not T06/T12/T18).
     """
     from datetime import timedelta as _td
 
-    expected = {"ifs_fc_monthly": set(), "aifs_fc_monthly": set(), "ifs_an_monthly": set()}
+    expected    = {"ifs_fc_monthly": set(), "aifs_fc_monthly": set(), "ifs_an_monthly": set()}
+    exp_times   = {}  # basename -> expected unique valid_time count
 
+    # --- FC streams ---
     for tag, stem, start_str, end_str, clip_at_end in [
         ("ifs_fc_monthly",  "ifs_fc_2t_county",  IFS_START,  IFS_END,  True),
         ("aifs_fc_monthly", "aifs_fc_2t_county", AIFS_START, AIFS_END, False),
@@ -542,23 +549,39 @@ def _expected_fc_an_parquets():
         start  = datetime.strptime(start_str, "%Y-%m-%d")
         end_dt = datetime.strptime(end_str,   "%Y-%m-%d")  # midnight = pd.date_range end
 
-        keys = set()
+        counts = {}  # (yr, mo, lead) -> n_unique_valid_times
         init_dt = start
         while init_dt <= end_dt:  # matches pd.date_range(start, end, freq='12h')
             for lead in LEAD_TIMES:
                 vt = init_dt + _td(hours=lead)
                 if clip_at_end and vt > end_dt:
-                    continue  # alignment will drop: IFS AN doesn't cover beyond IFS_END
-                keys.add((vt.year, vt.month, lead))
+                    continue  # alignment drops: IFS AN doesn't cover beyond IFS_END
+                k = (vt.year, vt.month, lead)
+                counts[k] = counts.get(k, 0) + 1
             init_dt += _td(hours=12)
 
-        for yr, mo, lead in keys:
-            expected[tag].add(f"{stem}_{yr}_{mo:02d}_lead{lead:03d}.parquet")
+        for (yr, mo, lead), n in counts.items():
+            name = f"{stem}_{yr}_{mo:02d}_lead{lead:03d}.parquet"
+            expected[tag].add(name)
+            exp_times[name] = n
 
-    for yr, mo, _, _ in _iter_year_months(IFS_START, IFS_END):
-        expected["ifs_an_monthly"].add(f"ifs_an_2t_county_{yr}_{mo:02d}.parquet")
+    # --- IFS AN ---
+    # build_an_files uses pd.date_range(IFS_START, IFS_END, freq='6h'), which
+    # also stops at IFS_END midnight — so the last day only contributes T00.
+    an_start  = datetime.strptime(IFS_START, "%Y-%m-%d")
+    an_end_dt = datetime.strptime(IFS_END,   "%Y-%m-%d")
+    an_counts = {}  # (yr, mo) -> n
+    t = an_start
+    while t <= an_end_dt:
+        k = (t.year, t.month)
+        an_counts[k] = an_counts.get(k, 0) + 1
+        t += _td(hours=6)
+    for (yr, mo), n in an_counts.items():
+        name = f"ifs_an_2t_county_{yr}_{mo:02d}.parquet"
+        expected["ifs_an_monthly"].add(name)
+        exp_times[name] = n
 
-    return expected
+    return expected, exp_times
 
 
 def check_fc_an_aggregation():
@@ -571,7 +594,7 @@ def check_fc_an_aggregation():
         ("aifs_fc_monthly", _FC_CHUNK_PAT, "valid_time"),
         ("ifs_an_monthly",  _AN_CHUNK_PAT, "time"),
     ]
-    expected_by_subdir = _expected_fc_an_parquets()
+    expected_by_subdir, exp_times = _expected_fc_an_parquets()
 
     flagged = []
 
@@ -602,13 +625,10 @@ def check_fc_an_aggregation():
         # Check completeness of present parquets
         for name in sorted(expected_names - set(missing_names)):
             path = found_paths[name]
-            m = pat.search(name)
-            if not m:
-                continue
-            yr, mo = int(m.group("yr")), int(m.group("mo"))
-            days = calendar.monthrange(yr, mo)[1]
-            # Theoretical max: FC has 2 init hours/day; AN has 4 analysis times/day.
-            expected_times = 4 * days if subdir.endswith("an_monthly") else 2 * days
+            # Use the exact expected time count derived from the same init enumeration
+            # as the aggregation script — this correctly handles boundary months,
+            # long-lead month-end spillover, and alignment clipping at IFS_END.
+            expected_times = exp_times.get(name, 0)
 
             unique_times = _parquet_unique_count(path, time_col)
             if unique_times < expected_times:
