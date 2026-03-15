@@ -320,80 +320,95 @@ def main():
     # §3  Monthly timeseries — bias, MAE, ACC
     # ══════════════════════════════════════════════════════════════════════════
     def sec3():
-        section("§3  Monthly timeseries")
+        section("§3  Timeseries (daily + 30-day moving average)")
+
+        MA = 30  # rolling window in days
+
+        def add_ma(df, col):
+            return df[col].rolling(MA, center=True, min_periods=MA // 2).mean()
+
+        # Daily bias and MAE
         df_ts = q("""
-            SELECT DATE_TRUNC('month', valid_time) AS mo,
+            SELECT CAST(valid_time AS DATE) AS day,
                 SUM(bias      * aland) / SUM(aland) AS aw_bias,
                 SUM(abs_error * aland) / SUM(aland) AS aw_mae
             FROM ifs_bias
-            GROUP BY DATE_TRUNC('month', valid_time)
-            ORDER BY mo
+            GROUP BY CAST(valid_time AS DATE)
+            ORDER BY day
         """)
-        df_ts["mo"] = pd.to_datetime(df_ts["mo"])
+        df_ts["day"] = pd.to_datetime(df_ts["day"])
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
-        colors = ["#d6604d" if v > 0 else "#2166ac" for v in df_ts["aw_bias"]]
-        ax1.bar(df_ts["mo"], df_ts["aw_bias"], color=colors, width=25)
+        ax1.plot(df_ts["day"], df_ts["aw_bias"], lw=0.5, color="#aaaaaa", alpha=0.6)
+        ax1.plot(df_ts["day"], add_ma(df_ts, "aw_bias"), lw=1.8, color="#d6604d",
+                 label=f"{MA}-day MA")
         ax1.axhline(0, color="k", lw=0.8, ls="--")
         ax1.set_ylabel("Bias (K)")
         ax1.set_title("IFS — area-weighted mean bias (all leads, all counties)")
+        ax1.legend(fontsize=8, loc="upper right")
         ax1.grid(True, alpha=0.3, axis="y")
 
-        ax2.plot(df_ts["mo"], df_ts["aw_mae"], color="#444", lw=1.2)
-        ax2.fill_between(df_ts["mo"], df_ts["aw_mae"], alpha=0.25, color="#444")
+        ax2.plot(df_ts["day"], df_ts["aw_mae"], lw=0.5, color="#aaaaaa", alpha=0.6)
+        ax2.plot(df_ts["day"], add_ma(df_ts, "aw_mae"), lw=1.8, color="#444444",
+                 label=f"{MA}-day MA")
         ax2.set_ylabel("MAE (K)")
         ax2.set_xlabel("Date")
         ax2.set_title("IFS — area-weighted MAE")
+        ax2.legend(fontsize=8, loc="upper right")
         ax2.grid(True, alpha=0.3)
         plt.tight_layout()
-        savefig(fig, f"{OUT}/03_timeseries/ifs_monthly_bias_mae.png")
+        savefig(fig, f"{OUT}/03_timeseries/ifs_daily_bias_mae.png")
 
         if HAS_ANOM:
             df_acc = q("""
-                SELECT DATE_TRUNC('month', valid_time) AS mo,
+                SELECT CAST(valid_time AS DATE) AS day,
                     CORR(fc_anom, an_anom) AS acc
                 FROM ifs_anom
-                GROUP BY DATE_TRUNC('month', valid_time)
-                ORDER BY mo
+                GROUP BY CAST(valid_time AS DATE)
+                ORDER BY day
             """)
-            df_acc["mo"] = pd.to_datetime(df_acc["mo"])
+            df_acc["day"] = pd.to_datetime(df_acc["day"])
             fig, ax = plt.subplots(figsize=(14, 4))
-            ax.plot(df_acc["mo"], df_acc["acc"], lw=1.2, color="#2166ac")
-            ax.fill_between(df_acc["mo"], df_acc["acc"], alpha=0.25, color="#2166ac")
+            ax.plot(df_acc["day"], df_acc["acc"], lw=0.5, color="#aaaaaa", alpha=0.6)
+            ax.plot(df_acc["day"], add_ma(df_acc, "acc"), lw=1.8, color="#2166ac",
+                    label=f"{MA}-day MA")
             ax.set_ylim(0, 1)
             ax.set_ylabel("ACC (pooled across counties)")
             ax.set_xlabel("Date")
-            ax.set_title("IFS — monthly ACC (all leads)")
+            ax.set_title("IFS — daily ACC (all leads)")
+            ax.legend(fontsize=8, loc="upper right")
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
-            savefig(fig, f"{OUT}/03_timeseries/ifs_monthly_acc.png")
+            savefig(fig, f"{OUT}/03_timeseries/ifs_daily_acc.png")
 
         # Per-lead timeseries overlay for key leads
         LEAD_LINES = [lt for lt in [24, 72, 120, 240]
                       if lt in set(q("SELECT DISTINCT lead_time FROM ifs_bias")["lead_time"])]
         df_lead_ts = q(f"""
-            SELECT DATE_TRUNC('month', valid_time) AS mo,
+            SELECT CAST(valid_time AS DATE) AS day,
                 lead_time,
                 SUM(bias * aland) / SUM(aland) AS aw_bias
             FROM ifs_bias
             WHERE lead_time IN ({",".join(str(l) for l in LEAD_LINES)})
-            GROUP BY DATE_TRUNC('month', valid_time), lead_time
-            ORDER BY mo, lead_time
+            GROUP BY CAST(valid_time AS DATE), lead_time
+            ORDER BY day, lead_time
         """)
-        df_lead_ts["mo"] = pd.to_datetime(df_lead_ts["mo"])
+        df_lead_ts["day"] = pd.to_datetime(df_lead_ts["day"])
         cmap_lt = mcm.get_cmap("plasma", len(LEAD_LINES))
         fig, ax = plt.subplots(figsize=(14, 4))
         for i, lt in enumerate(LEAD_LINES):
-            d = df_lead_ts[df_lead_ts["lead_time"] == lt]
-            ax.plot(d["mo"], d["aw_bias"], lw=1.2, color=cmap_lt(i), label=f"{lt}h")
+            d = df_lead_ts[df_lead_ts["lead_time"] == lt].sort_values("day")
+            ma = d["aw_bias"].rolling(MA, center=True, min_periods=MA // 2).mean()
+            ax.plot(d["day"], d["aw_bias"], lw=0.4, color=cmap_lt(i), alpha=0.3)
+            ax.plot(d["day"], ma, lw=1.8, color=cmap_lt(i), label=f"{lt}h")
         ax.axhline(0, color="k", lw=0.8, ls="--")
         ax.set_ylabel("Area-weighted mean bias (K)")
         ax.set_xlabel("Date")
-        ax.set_title("IFS — monthly bias by lead time")
+        ax.set_title(f"IFS — daily bias by lead time ({MA}-day MA, bold)")
         ax.legend(title="Lead", fontsize=8, ncol=len(LEAD_LINES))
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
-        savefig(fig, f"{OUT}/03_timeseries/ifs_monthly_bias_by_lead.png")
+        savefig(fig, f"{OUT}/03_timeseries/ifs_daily_bias_by_lead.png")
 
     try_section("§3", sec3)
 
