@@ -116,6 +116,54 @@ def _count_nc_in_dir(directory):
         return 0
 
 
+_GRIB_MAGIC = b"GRIB"
+_HDF5_MAGIC = b"\x89HDF"
+_MIN_NC_BYTES = 10_000  # real CONUS NetCDF files are much larger; flag anything smaller
+
+
+def _magic_ok(path):
+    """Return True if the file's magic bytes indicate NetCDF (NC3 or HDF5/NC4)."""
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(4)
+        return magic[:3] == b"CDF" or magic == _HDF5_MAGIC
+    except OSError:
+        return False
+
+
+def _lightweight_ok(path, expected_var):
+    """
+    Fast three-way check for complete directories:
+      1. File size is above minimum (not truncated / empty)
+      2. Magic bytes indicate NetCDF format (not GRIB, not corrupt)
+      3. Expected variable and ≥2 spatial dims present (netCDF4 metadata read, no data load)
+
+    Returns True if the file passes all three checks. Uses netCDF4 directly rather
+    than xarray to minimise overhead on I/O-bound parallel-filesystem reads.
+    Falls back to True (assume OK) if netCDF4 is unavailable.
+    """
+    try:
+        if os.path.getsize(path) < _MIN_NC_BYTES:
+            return False
+    except OSError:
+        return False
+    if not _magic_ok(path):
+        return False
+    try:
+        import netCDF4 as nc4
+        with nc4.Dataset(path, "r") as ds:
+            if expected_var not in ds.variables:
+                return False
+            spatial = set(ds.dimensions) & {"lat", "lon", "latitude", "longitude", "x", "y"}
+            if len(spatial) < 2:
+                return False
+    except ImportError:
+        pass  # netCDF4 not available; magic bytes + size are sufficient fallback
+    except Exception:
+        return False
+    return True
+
+
 def _content_ok(path, expected_var):
     """
     Lazy xarray open to check that expected_var is present and has ≥2 spatial dims.
@@ -163,11 +211,20 @@ def _check_leaf_dir(directory, expected, expected_var):
         if f.endswith(".nc")
     ]
     actual = len(nc_files)
-    bad = []
-    for path in nc_files:
-        ok, _ = _content_ok(path, expected_var)
-        if not ok:
-            bad.append(path)
+
+    if actual == expected:
+        # Fast path: lightweight check (size + magic bytes + netCDF4 metadata) on every file.
+        # Avoids the heavier xarray open for directories that look healthy.
+        anomalous = [p for p in nc_files if not _lightweight_ok(p, expected_var)]
+        if not anomalous:
+            return {"dir_exists": True, "actual": actual, "expected": expected, "bad": []}
+        # Some files failed the lightweight check — run full content check on just those
+        # to get a precise reason and confirm they are truly bad.
+        bad = [p for p in anomalous if not _content_ok(p, expected_var)[0]]
+        return {"dir_exists": True, "actual": actual, "expected": expected, "bad": bad}
+
+    # Slow path: dir is incomplete — full content-check every file present.
+    bad = [p for p in nc_files if not _content_ok(p, expected_var)[0]]
     return {"dir_exists": True, "actual": actual, "expected": expected, "bad": bad}
 
 
