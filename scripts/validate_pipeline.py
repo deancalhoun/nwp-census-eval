@@ -362,7 +362,52 @@ def _print_source_phase(source_status):
         if extra > 0:
             print(f"    … and {extra} more")
 
-    return all_corrupt
+    # --- Alignment check ---
+    # AN gaps are the dangerous case: one missing AN day silently drops every FC
+    # entry whose valid_time (= init + lead) falls on that date, across all leads.
+    # FC gaps just mean fewer rows in the parquet — caught by Phase 2b.
+    an_gaps = {
+        (yr, mo): info["expected"] - info["actual"]
+        for (yr, mo), info in source_status.get("ifs_an", {}).items()
+        if info["actual"] < info["expected"]
+    }
+    # AIFS FC also aligns against IFS AN, so check its date range too.
+    aifs_an_gaps = {
+        (yr, mo): gap
+        for (yr, mo), gap in an_gaps.items()
+        if (yr, mo) >= (int(AIFS_START[:4]), int(AIFS_START[5:7]))
+    }
+    fc_gaps = {
+        (tag, yr, mo)
+        for tag in ("ifs_fc", "aifs_fc")
+        for (init_hour, lead, yr, mo), info in source_status.get(tag, {}).items()
+        if info["actual"] < info["expected"]
+    }
+
+    print("  --- Alignment ---")
+    if not an_gaps and not fc_gaps:
+        print("  IFS AN complete — no alignment drops expected")
+    else:
+        if an_gaps:
+            print(f"  IFS AN gaps in {len(an_gaps)} month(s) — FC valid_times on missing days will be dropped:")
+            for (yr, mo), missing in sorted(an_gaps.items())[:_MAX_DETAIL_LINES]:
+                aifs_note = " (affects AIFS FC too)" if (yr, mo) in aifs_an_gaps else ""
+                print(f"    {yr}/{mo:02d}: {missing} AN day(s) missing{aifs_note}")
+            extra = len(an_gaps) - _MAX_DETAIL_LINES
+            if extra > 0:
+                print(f"    … and {extra} more")
+        if fc_gaps:
+            by_month = {}
+            for tag, yr, mo in fc_gaps:
+                by_month.setdefault((yr, mo), []).append(tag)
+            print(f"  FC source gaps in {len(by_month)} month(s) — missing FC inits absent from parquets (not AN-side drops):")
+            for (yr, mo), tags in sorted(by_month.items())[:_MAX_DETAIL_LINES]:
+                print(f"    {yr}/{mo:02d}: {', '.join(sorted(set(tags)))}")
+            extra = len(by_month) - _MAX_DETAIL_LINES
+            if extra > 0:
+                print(f"    … and {extra} more")
+
+    return all_corrupt, len(an_gaps)
 
 
 # ---------------------------------------------------------------------------
@@ -713,7 +758,7 @@ def main(argv=None):
     # Phase 1
     source_status = check_source_files()
     print()
-    corrupt_nc = _print_source_phase(source_status)
+    corrupt_nc, n_an_gap_months = _print_source_phase(source_status)
     print()
 
     # Phase 2a
@@ -742,15 +787,17 @@ def main(argv=None):
     n_total_parq  = n_era5_parq + n_fc_an_parq
     n_missing_der = len(missing_derived)
 
-    if n_corrupt_nc == 0 and n_total_parq == 0:
+    if n_corrupt_nc == 0 and n_total_parq == 0 and n_an_gap_months == 0:
         print("  No issues found — pipeline artifacts look complete.")
     else:
+        if n_an_gap_months:
+            print(f"  {n_an_gap_months} month(s) with IFS AN gaps — FC alignment drops expected")
         if n_corrupt_nc:
             print(f"  {n_corrupt_nc} corrupt NC file(s) flagged")
         if n_era5_parq:
             print(f"  {n_era5_parq} ERA5 monthly parquet(s) flagged (missing/stale)")
         if n_fc_an_parq:
-            print(f"  {n_fc_an_parq} FC/AN checkpoint parquet(s) flagged (incomplete/legacy)")
+            print(f"  {n_fc_an_parq} FC/AN checkpoint parquet(s) flagged (incomplete)")
         if remove_clim:
             print("  ERA5 climatology flagged (stale)")
 
