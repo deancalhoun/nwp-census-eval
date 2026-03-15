@@ -236,12 +236,14 @@ def check_source_files():
         tasks.append(("ifs_an", (yr, mo), d, (last - first).days + 1))
 
     # ERA5: {ERA5_DIR}/{YYYYMM}/
+    # ERA5 is one monthly file per directory (e.g. e5.oper.an.sfc.*.1991010100_1991013123.nc),
+    # not one file per day like IFS/AIFS.
     start_yr = int(ERA5_CLIM_START[:4])
     end_yr   = int(ERA5_CLIM_END[:4])
     for yr in range(start_yr, end_yr + 1):
         for mo in range(1, 13):
             d = os.path.join(ERA5_DIR, f"{yr}{mo:02d}")
-            tasks.append(("era5", (yr, mo), d, calendar.monthrange(yr, mo)[1]))
+            tasks.append(("era5", (yr, mo), d, 1))
 
     # --- Pass 1: parallel directory scan (thread-safe I/O only) ---
     try:
@@ -406,23 +408,19 @@ def check_era5_aggregation(source_status):
                 continue
 
             if source_count is not None:
+                # Each ERA5 source file covers a full month; the parquet should have
+                # one unique time per day (aggregation extracts daily values from the
+                # monthly file). Compare against days-in-month, not source file count.
                 unique_times = _parquet_unique_count(path, "time")
                 expected_days = calendar.monthrange(yr, mo)[1]
-                if unique_times != source_count:
+                if unique_times != expected_days:
                     n_stale += 1
-                    flagged.append((path, f"STALE ({unique_times} times != {source_count} source files)"))
+                    flagged.append((path, f"STALE ({unique_times} times != {expected_days} expected days)"))
                     if len(detail_lines) < _MAX_DETAIL_LINES:
                         detail_lines.append(
-                            f"    STALE     {yr}/{mo:02d}: {unique_times} times != {source_count} source files"
+                            f"    STALE     {yr}/{mo:02d}: {unique_times} times != {expected_days} expected days"
                         )
                     continue
-                if source_count < expected_days:
-                    n_source_incomplete += 1
-                    # parquet matches source but source is incomplete — note only
-                    if len(detail_lines) < _MAX_DETAIL_LINES:
-                        detail_lines.append(
-                            f"    SRC_INCOMPLETE  {yr}/{mo:02d}: only {source_count}/{expected_days} source files"
-                        )
 
             n_ok += 1
 
@@ -502,7 +500,7 @@ def check_fc_an_aggregation():
             continue
 
         paths = sorted(glob.glob(os.path.join(monthly_dir, "*.parquet")))
-        n_ok = n_incomplete = n_legacy = 0
+        n_ok = n_incomplete = n_legacy_ok = n_legacy_incomplete = 0
         detail_lines = []
 
         for path in paths:
@@ -510,31 +508,44 @@ def check_fc_an_aggregation():
             if not m:
                 continue
 
+            yr, mo = int(m.group("yr")), int(m.group("mo"))
             n_source = _read_sidecar_n_source(path)
-            if n_source is None:
-                n_legacy += 1
-                flagged.append((path, "LEGACY (no sidecar)"))
-                if len(detail_lines) < _MAX_DETAIL_LINES:
-                    detail_lines.append(f"    LEGACY      {os.path.basename(path)}")
-                continue
+            is_legacy = n_source is None
+
+            if is_legacy:
+                # No sidecar: fall back to theoretical max.
+                # FC chunks: 2 init hours/day; AN chunks: 4 analysis times/day.
+                days = calendar.monthrange(yr, mo)[1]
+                n_source = 4 * days if subdir.endswith("an_monthly") else 2 * days
 
             unique_times = _parquet_unique_count(path, time_col)
             if unique_times < n_source:
-                n_incomplete += 1
-                flagged.append((path, f"INCOMPLETE ({unique_times}/{n_source})"))
-                if len(detail_lines) < _MAX_DETAIL_LINES:
-                    detail_lines.append(
-                        f"    INCOMPLETE  {os.path.basename(path)} ({unique_times}/{n_source})"
-                    )
+                if is_legacy:
+                    n_legacy_incomplete += 1
+                    flagged.append((path, f"LEGACY_INCOMPLETE ({unique_times}/{n_source} theoretical max)"))
+                    if len(detail_lines) < _MAX_DETAIL_LINES:
+                        detail_lines.append(
+                            f"    LEGACY_INCOMPLETE  {os.path.basename(path)} ({unique_times}/{n_source})"
+                        )
+                else:
+                    n_incomplete += 1
+                    flagged.append((path, f"INCOMPLETE ({unique_times}/{n_source})"))
+                    if len(detail_lines) < _MAX_DETAIL_LINES:
+                        detail_lines.append(
+                            f"    INCOMPLETE  {os.path.basename(path)} ({unique_times}/{n_source})"
+                        )
             else:
-                n_ok += 1
+                if is_legacy:
+                    n_legacy_ok += 1
+                else:
+                    n_ok += 1
 
-        total = n_ok + n_incomplete + n_legacy
-        status = "OK" if n_incomplete == 0 and n_legacy == 0 else "PARTIAL"
+        total = n_ok + n_incomplete + n_legacy_ok + n_legacy_incomplete
         print(
             f"  {subdir}: {total} parquets — {n_ok} OK"
+            + (f", {n_legacy_ok} OK (no sidecar)" if n_legacy_ok else "")
             + (f", {n_incomplete} incomplete" if n_incomplete else "")
-            + (f", {n_legacy} legacy (no sidecar)" if n_legacy else "")
+            + (f", {n_legacy_incomplete} incomplete (no sidecar)" if n_legacy_incomplete else "")
         )
         for line in detail_lines:
             print(line)
