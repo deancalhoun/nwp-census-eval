@@ -160,13 +160,30 @@ def _an_months(an_monthly_dir):
     return sorted(months)
 
 
-def _load_fc_month(fc_monthly_dir, stem, yr, mo):
-    """Load and concatenate all lead-time parquets for (yr, mo)."""
-    pattern = os.path.join(fc_monthly_dir, f"{stem}_{yr}_{mo:02d}_lead*.parquet")
-    paths = glob.glob(pattern)
-    if not paths:
+def _load_fc_for_an_month(fc_monthly_dir, stem, yr, mo):
+    """Load FC rows whose valid_time falls in (yr, mo).
+
+    FC parquets are grouped by INIT-time month, so long-lead forecasts from the
+    previous init month may have valid_times in the current month (spillover up
+    to max_lead=240h = 10 days). We load both the current and previous init
+    month's parquets and filter to valid_times in [month_start, month_end).
+    """
+    month_start = pd.Timestamp(yr, mo, 1)
+    month_end   = pd.Timestamp(yr + 1, 1, 1) if mo == 12 else pd.Timestamp(yr, mo + 1, 1)
+
+    prev_yr, prev_mo = (yr - 1, 12) if mo == 1 else (yr, mo - 1)
+
+    frames = []
+    for y, m in [(prev_yr, prev_mo), (yr, mo)]:
+        for p in glob.glob(os.path.join(fc_monthly_dir, f"{stem}_{y}_{m:02d}_lead*.parquet")):
+            frames.append(pd.read_parquet(p))
+
+    if not frames:
         return None
-    return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+    vt = pd.to_datetime(df["valid_time"])
+    df = df[(vt >= month_start) & (vt < month_end)]
+    return df if not df.empty else None
 
 
 def _load_an_month(an_monthly_dir, yr, mo):
@@ -289,7 +306,7 @@ def compute_ifs(area_weights, clim, bias_path, anom_path, force=False):
     anom_w = _StreamingWriter(anom_path)
     try:
         for yr, mo in months:
-            df_fc = _load_fc_month(IFS_FC_MONTHLY_DIR, "ifs_fc_2t_county", yr, mo)
+            df_fc = _load_fc_for_an_month(IFS_FC_MONTHLY_DIR, "ifs_fc_2t_county", yr, mo)
             df_an = _load_an_month(IFS_AN_MONTHLY_DIR, yr, mo)
             if df_fc is None or df_an is None:
                 logging.warning("Missing IFS fc or an for %d-%02d; skipping.", yr, mo)
@@ -329,7 +346,7 @@ def compute_aifs(area_weights, clim, bias_path, anom_path, force=False):
     anom_w = _StreamingWriter(anom_path)
     try:
         for yr, mo in months:
-            df_fc = _load_fc_month(AIFS_FC_MONTHLY_DIR, "aifs_fc_2t_county", yr, mo)
+            df_fc = _load_fc_for_an_month(AIFS_FC_MONTHLY_DIR, "aifs_fc_2t_county", yr, mo)
             df_an = _load_an_month(IFS_AN_MONTHLY_DIR, yr, mo)
             if df_fc is None or df_an is None:
                 continue
@@ -372,8 +389,8 @@ def compute_comparison(ifs_bias_path, aifs_bias_path, area_weights, compare_path
     try:
         for yr, mo in months:
             df_an      = _load_an_month(IFS_AN_MONTHLY_DIR,  yr, mo)
-            df_ifs_fc  = _load_fc_month(IFS_FC_MONTHLY_DIR,  "ifs_fc_2t_county",  yr, mo)
-            df_aifs_fc = _load_fc_month(AIFS_FC_MONTHLY_DIR, "aifs_fc_2t_county", yr, mo)
+            df_ifs_fc  = _load_fc_for_an_month(IFS_FC_MONTHLY_DIR,  "ifs_fc_2t_county",  yr, mo)
+            df_aifs_fc = _load_fc_for_an_month(AIFS_FC_MONTHLY_DIR, "aifs_fc_2t_county", yr, mo)
             if df_an is None or df_ifs_fc is None or df_aifs_fc is None:
                 continue
 
