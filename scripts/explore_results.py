@@ -7,7 +7,7 @@ Sections
   §1  Skill by lead time (IFS)
   §2  IFS vs AIFS comparison (common period only)
   §3  Monthly timeseries — bias, MAE, ACC
-  §4  Month × lead time heatmaps
+  §4  Seasonal cycle by lead time (one line per lead)
   §5  Seasonal maps — bias, MAE, forecast/analysis anomalies
   §6  Bias and error histograms
   §7  Koppen-Geiger climate region interactions
@@ -28,7 +28,7 @@ Outputs
         01_skill_lead/
         02_model_comparison/
         03_timeseries/
-        04_heatmaps/
+        04_seasonal_cycle/
         05_seasonal_maps/
         06_histograms/
         07_climate_regions/
@@ -401,7 +401,7 @@ def main():
     # §4  Month × lead time heatmaps
     # ══════════════════════════════════════════════════════════════════════════
     def sec4():
-        section("§4  Month × lead heatmaps")
+        section("§4  Seasonal cycle by lead time")
         df = q("""
             SELECT MONTH(valid_time) AS month,
                 lead_time,
@@ -411,32 +411,28 @@ def main():
             GROUP BY MONTH(valid_time), lead_time
             ORDER BY month, lead_time
         """)
-        leads  = sorted(df["lead_time"].unique())
-        months = list(range(1, 13))
+        leads = sorted(df["lead_time"].unique())
+        cmap_lt = mcm.get_cmap("plasma", len(leads))
 
-        for col, cmap, label, fname, diverging in [
-            ("aw_bias", RDBU, "Bias (K)",  "ifs_bias_month_x_lead.png",  True),
-            ("aw_mae",  REDS, "MAE (K)",   "ifs_mae_month_x_lead.png",   False),
+        for col, ylabel, hline, fname in [
+            ("aw_bias", "Area-weighted bias (K)",  0,    "ifs_bias_by_month_per_lead.png"),
+            ("aw_mae",  "Area-weighted MAE (K)",   None, "ifs_mae_by_month_per_lead.png"),
         ]:
-            pivot = (df.pivot(index="lead_time", columns="month", values=col)
-                     .reindex(index=leads, columns=months))
-            absmax = pivot.abs().max().max()
-            vmin = -absmax if diverging else pivot.min().min()
-            vmax =  absmax if diverging else pivot.max().max()
-
-            fig, ax = plt.subplots(figsize=(13, 5))
-            im = ax.imshow(pivot.values, aspect="auto", cmap=cmap,
-                           vmin=vmin, vmax=vmax, origin="lower")
-            ax.set_xticks(range(12))
+            fig, ax = plt.subplots(figsize=(11, 4))
+            for i, lt in enumerate(leads):
+                d = df[df["lead_time"] == lt].sort_values("month")
+                ax.plot(d["month"], d[col], lw=1.4, color=cmap_lt(i), label=f"{lt}h")
+            if hline is not None:
+                ax.axhline(hline, color="k", lw=0.8, ls="--")
+            ax.set_xticks(range(1, 13))
             ax.set_xticklabels(MONTH_LABELS)
-            ax.set_yticks(range(len(leads)))
-            ax.set_yticklabels([f"{lt}h" for lt in leads])
             ax.set_xlabel("Month")
-            ax.set_ylabel("Lead time")
-            ax.set_title(f"IFS — area-weighted {label} by month × lead time")
-            plt.colorbar(im, ax=ax, label=label)
+            ax.set_ylabel(ylabel)
+            ax.set_title(f"IFS — {ylabel} by month, one line per lead time")
+            ax.legend(title="Lead", fontsize=7, ncol=4, loc="upper right")
+            ax.grid(True, alpha=0.3)
             plt.tight_layout()
-            savefig(fig, f"{OUT}/04_heatmaps/{fname}")
+            savefig(fig, f"{OUT}/04_seasonal_cycle/{fname}")
 
         if HAS_ANOM:
             df_acc_ml = q("""
@@ -447,21 +443,20 @@ def main():
                 GROUP BY MONTH(valid_time), lead_time
                 ORDER BY month, lead_time
             """)
-            pivot_acc = (df_acc_ml.pivot(index="lead_time", columns="month", values="acc")
-                         .reindex(index=leads, columns=months))
-            fig, ax = plt.subplots(figsize=(13, 5))
-            im = ax.imshow(pivot_acc.values, aspect="auto", cmap="viridis",
-                           vmin=0, vmax=1, origin="lower")
-            ax.set_xticks(range(12))
+            fig, ax = plt.subplots(figsize=(11, 4))
+            for i, lt in enumerate(leads):
+                d = df_acc_ml[df_acc_ml["lead_time"] == lt].sort_values("month")
+                ax.plot(d["month"], d["acc"], lw=1.4, color=cmap_lt(i), label=f"{lt}h")
+            ax.set_xticks(range(1, 13))
             ax.set_xticklabels(MONTH_LABELS)
-            ax.set_yticks(range(len(leads)))
-            ax.set_yticklabels([f"{lt}h" for lt in leads])
             ax.set_xlabel("Month")
-            ax.set_ylabel("Lead time")
-            ax.set_title("IFS — ACC (pooled) by month × lead time")
-            plt.colorbar(im, ax=ax, label="ACC")
+            ax.set_ylabel("ACC (pooled)")
+            ax.set_ylim(0, 1)
+            ax.set_title("IFS — ACC by month, one line per lead time")
+            ax.legend(title="Lead", fontsize=7, ncol=4, loc="lower right")
+            ax.grid(True, alpha=0.3)
             plt.tight_layout()
-            savefig(fig, f"{OUT}/04_heatmaps/ifs_acc_month_x_lead.png")
+            savefig(fig, f"{OUT}/04_seasonal_cycle/ifs_acc_by_month_per_lead.png")
 
     try_section("§4", sec4)
 
