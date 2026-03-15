@@ -25,6 +25,7 @@ dependencies:
   - pyarrow
   - tqdm
   - rioxarray
+  - folium
   # Analysis / spatial statistics
   - pymc
   - arviz
