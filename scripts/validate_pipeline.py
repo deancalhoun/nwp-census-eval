@@ -11,7 +11,7 @@ Sections (always run):
 Opt-in sections (slow on large file trees):
     --nc-sweep / --fix-grib / --remove-corrupt  — magic-byte sweep
     --content-check / --remove-bad-content      — xarray variable check
-    --check-downloads                           — raw .nc file counts
+    --check-downloads                           — file counts vs. config manifest
 
 Usage:
     python scripts/validate_pipeline.py                  # fast default check
@@ -45,6 +45,12 @@ from config import (
     IFS_FC_DIR,
     IFS_AN_DIR,
     AIFS_FC_DIR,
+    IFS_START,
+    IFS_END,
+    AIFS_START,
+    AIFS_END,
+    LEAD_TIMES,
+    INIT_HOURS,
 )
 
 _MARKER = {
@@ -574,40 +580,142 @@ def check_nc_content(remove_bad=False, max_failures_shown=20):
 # ---------------------------------------------------------------------------
 # Download directory check
 # ---------------------------------------------------------------------------
+def _iter_year_months(start_str, end_str):
+    """Yield (year, month, first_day, last_day) for every month in [start, end]."""
+    from datetime import date
+    start = datetime.strptime(start_str, "%Y-%m-%d").date()
+    end   = datetime.strptime(end_str,   "%Y-%m-%d").date()
+    yr, mo = start.year, start.month
+    while (yr, mo) <= (end.year, end.month):
+        days = calendar.monthrange(yr, mo)[1]
+        first = max(start, date(yr, mo, 1))
+        last  = min(end,   date(yr, mo, days))
+        yield yr, mo, first, last
+        mo += 1
+        if mo > 12:
+            mo = 1
+            yr += 1
+
+
+def _count_nc_in_dir(directory):
+    """Count .nc files directly in a leaf directory (no recursion)."""
+    try:
+        return sum(1 for f in os.listdir(directory) if f.endswith(".nc"))
+    except OSError:
+        return 0
+
+
 def check_downloads():
-    """Check IFS/AIFS download directories by counting files at each level."""
-    from config import IFS_FC_DIR, IFS_AN_DIR, AIFS_FC_DIR
+    """Check IFS/AIFS download directories against the config-defined expected manifest.
 
-    def _count_nc(directory):
-        """Count .nc files one level deep (init_hour/lead or year/month subdirs)."""
-        n = 0
-        try:
-            for root, dirs, files in os.walk(directory):
-                n += sum(1 for f in files if f.endswith(".nc"))
-        except OSError:
-            return None
-        return n
+    For fc: one file per (init_hour, lead, day); directories are
+        {FC_DIR}/{init_hour}/{lead}/{year}/{month:02d}/
+    For an: one file per day; directories are
+        {AN_DIR}/{year}/{month:02d}/
 
+    Reports per-stream counts (complete/incomplete/missing dirs) and lists up
+    to 20 specific incomplete directories so missing source data is actionable.
+    """
     results = []
-    for label, directory in [
-        ("IFS fc",  IFS_FC_DIR),
-        ("IFS an",  IFS_AN_DIR),
-        ("AIFS fc", AIFS_FC_DIR),
+
+    # -- fc streams ---------------------------------------------------------
+    for label, fc_dir, start_str, end_str in [
+        ("IFS fc",  IFS_FC_DIR,  IFS_START,  IFS_END),
+        ("AIFS fc", AIFS_FC_DIR, AIFS_START, AIFS_END),
     ]:
-        if not os.path.isdir(directory):
+        if not os.path.isdir(fc_dir):
             results.append(_status(f"{label} downloads", "MISSING",
-                                   f"directory not found: {directory}"))
+                                   f"directory not found: {fc_dir}"))
             continue
-        n = _count_nc(directory)
-        if n is None:
-            results.append(_status(f"{label} downloads", "MISSING",
-                                   f"unreadable: {directory}"))
-        elif n == 0:
-            results.append(_status(f"{label} downloads", "MISSING",
-                                   f"no .nc files in {directory}"))
+
+        n_complete = n_incomplete = n_missing = 0
+        examples = []  # (dir_path, actual, expected)
+
+        for init_hour in INIT_HOURS:
+            for lead in LEAD_TIMES:
+                for yr, mo, first, last in _iter_year_months(start_str, end_str):
+                    expected = (last - first).days + 1
+                    d = os.path.join(fc_dir, init_hour, str(lead),
+                                     str(yr), f"{mo:02d}")
+                    actual = _count_nc_in_dir(d)
+                    if actual == 0 and not os.path.isdir(d):
+                        n_missing += 1
+                        if len(examples) < 20:
+                            examples.append((d, 0, expected))
+                    elif actual < expected:
+                        n_incomplete += 1
+                        if len(examples) < 20:
+                            examples.append((d, actual, expected))
+                    else:
+                        n_complete += 1
+
+        n_dirs = n_complete + n_incomplete + n_missing
+        if n_incomplete == 0 and n_missing == 0:
+            results.append(_status(
+                f"{label} downloads", "OK",
+                f"all {n_dirs:,} directories complete — {fc_dir}",
+            ))
         else:
-            results.append(_status(f"{label} downloads", "OK",
-                                   f"{n:,} .nc files — {directory}"))
+            detail_lines = [
+                f"{n_complete:,}/{n_dirs:,} directories complete "
+                f"({n_incomplete} incomplete, {n_missing} missing) — {fc_dir}",
+            ]
+            for d, act, exp in examples:
+                rel = os.path.relpath(d, fc_dir)
+                detail_lines.append(f"  {rel}: {act}/{exp} files")
+            if (n_incomplete + n_missing) > len(examples):
+                detail_lines.append(
+                    f"  … and {(n_incomplete + n_missing) - len(examples)} more"
+                )
+            results.append(_status(
+                f"{label} downloads", "PARTIAL", "\n             ".join(detail_lines),
+            ))
+
+    # -- IFS an -------------------------------------------------------------
+    if not os.path.isdir(IFS_AN_DIR):
+        results.append(_status("IFS an downloads", "MISSING",
+                               f"directory not found: {IFS_AN_DIR}"))
+    else:
+        n_complete = n_incomplete = n_missing = 0
+        examples = []
+
+        for yr, mo, first, last in _iter_year_months(IFS_START, IFS_END):
+            expected = (last - first).days + 1
+            d = os.path.join(IFS_AN_DIR, str(yr), f"{mo:02d}")
+            actual = _count_nc_in_dir(d)
+            if actual == 0 and not os.path.isdir(d):
+                n_missing += 1
+                if len(examples) < 20:
+                    examples.append((d, 0, expected))
+            elif actual < expected:
+                n_incomplete += 1
+                if len(examples) < 20:
+                    examples.append((d, actual, expected))
+            else:
+                n_complete += 1
+
+        n_dirs = n_complete + n_incomplete + n_missing
+        if n_incomplete == 0 and n_missing == 0:
+            results.append(_status(
+                "IFS an downloads", "OK",
+                f"all {n_dirs:,} directories complete — {IFS_AN_DIR}",
+            ))
+        else:
+            detail_lines = [
+                f"{n_complete:,}/{n_dirs:,} directories complete "
+                f"({n_incomplete} incomplete, {n_missing} missing) — {IFS_AN_DIR}",
+            ]
+            for d, act, exp in examples:
+                rel = os.path.relpath(d, IFS_AN_DIR)
+                detail_lines.append(f"  {rel}: {act}/{exp} files")
+            if (n_incomplete + n_missing) > len(examples):
+                detail_lines.append(
+                    f"  … and {(n_incomplete + n_missing) - len(examples)} more"
+                )
+            results.append(_status(
+                "IFS an downloads", "PARTIAL", "\n             ".join(detail_lines),
+            ))
+
     return results
 
 
@@ -620,7 +728,10 @@ def main(argv=None):
     parser.add_argument(
         "--check-downloads",
         action="store_true",
-        help="Check IFS/AIFS download directories (skipped by default; slow on large trees).",
+        help=(
+            "Check IFS/AIFS download directories against the config-defined expected manifest "
+            "(init_hours × lead_times × days). Slow on large trees; skipped by default."
+        ),
     )
     parser.add_argument(
         "--nc-sweep",

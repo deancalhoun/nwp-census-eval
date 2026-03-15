@@ -307,8 +307,22 @@ def _count_unique_times(path, tag):
         return 0
 
 
+_TAG_FREQ_PER_DAY = {
+    "ifs_fc":  2,  # 12-hourly init times
+    "aifs_fc": 2,  # 12-hourly init times
+    "ifs_an":  4,  # 6-hourly
+}
+_COMPLETENESS_THRESHOLD = 0.99  # matches validate_pipeline.py
+
+
 def _invalidate_incomplete_chunks(all_chunks):
-    """Delete checkpoint parquets whose unique-time count is less than the source file count."""
+    """Delete checkpoint parquets below the completeness threshold.
+
+    Expected count is the theoretical maximum (freq_per_day × days_in_month),
+    NOT len(files) — so a chunk whose source files were never downloaded is
+    correctly flagged rather than silently accepted as "complete".
+    """
+    import calendar
     n_checked = n_invalidated = 0
     for tag, group_key, files in all_chunks:
         if tag in ("ifs_fc", "aifs_fc"):
@@ -320,12 +334,14 @@ def _invalidate_incomplete_chunks(all_chunks):
         if not os.path.exists(path):
             continue
         n_checked += 1
-        expected = len(files)
+        freq = _TAG_FREQ_PER_DAY[tag]
+        days = calendar.monthrange(yr, mo)[1]
+        expected = freq * days
         actual = _count_unique_times(path, tag)
-        if actual < expected:
+        if actual < _COMPLETENESS_THRESHOLD * expected:
             logging.info(
-                "Incomplete checkpoint %s (%d/%d times) — invalidating",
-                os.path.basename(path), actual, expected,
+                "Incomplete checkpoint %s (%d/%d theoretical times, %.1f%%) — invalidating",
+                os.path.basename(path), actual, expected, 100.0 * actual / expected,
             )
             try:
                 os.remove(path)
@@ -591,9 +607,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--verify-checkpoints", action="store_true",
         help=(
-            "Before aggregating, scan all existing checkpoint parquets and delete any whose "
-            "unique-time count is less than the number of source files in that chunk. "
-            "Incomplete checkpoints will then be re-aggregated in the normal pass."
+            "Before aggregating, scan all existing checkpoint parquets and delete any that are "
+            "below the completeness threshold (unique-time count < 99%% of freq_per_day × "
+            "days_in_month). Uses the theoretical maximum, not just files currently on disk, "
+            "so months with missing source data are correctly flagged. Re-download missing "
+            "source files, then re-run without --verify-checkpoints to fill the gaps."
         ),
     )
     args = parser.parse_args()
