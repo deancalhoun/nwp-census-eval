@@ -239,11 +239,11 @@ def aggregate_an_file(path, time, weightmap, var_name):
 # Grouping helpers
 # ---------------------------------------------------------------------------
 def _group_fc_by_lead_month(fc_files):
-    """Group forecast files by (lead_time, year, month) of valid_time."""
+    """Group forecast files by (lead_time, year, month) of init_time."""
     def key(item):
         path, init, lead = item
-        vt = pd.to_datetime(init) + pd.Timedelta(hours=int(lead))
-        return (int(lead), vt.year, vt.month)
+        dt = pd.to_datetime(init)
+        return (int(lead), dt.year, dt.month)
     return [(k, list(g)) for k, g in groupby(sorted(fc_files, key=key), key)]
 
 

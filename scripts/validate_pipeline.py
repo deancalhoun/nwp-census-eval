@@ -220,10 +220,9 @@ def check_source_files():
                 tasks.append(("aifs_fc", (init_hour, lead, yr, mo), d, (last - first).days + 1))
 
     # IFS AN: {IFS_AN_DIR}/{year}/{month:02d}/
-    # AN must cover through fc_end + max(LEAD_TIMES) so every FC valid_time
-    # has a matching analysis (including spillover into the next year).
-    from datetime import timedelta as _td_p1
-    _an_end_dt = datetime.strptime(IFS_END, "%Y-%m-%d") + _td_p1(hours=12 + max(LEAD_TIMES))
+    # Scan through fc_end + max(LEAD_TIMES) so every FC valid_time has a
+    # matching analysis file on disk (including spillover into the next year).
+    _an_end_dt = datetime.strptime(IFS_END, "%Y-%m-%d") + timedelta(hours=12 + max(LEAD_TIMES))
     _an_end_str = f"{_an_end_dt.year}-{_an_end_dt.month:02d}-{_an_end_dt.day:02d}"
     for yr, mo, first, last in _iter_year_months(IFS_START, _an_end_str):
         d = os.path.join(IFS_AN_DIR, str(yr), f"{mo:02d}")
@@ -523,76 +522,47 @@ def _expected_fc_an_parquets():
     """
     Return (expected_by_subdir, expected_times) where:
       expected_by_subdir[subdir_key] = set of expected basename strings
-      expected_times[basename]       = exact expected unique-time count
+      expected_times[basename]       = expected unique init_time count (FC)
+                                       or unique analysis time count (AN)
 
-    Both are derived from the same init enumeration that aggregate_fc_an_2t.py uses,
-    so boundary months (first/last of date range), long leads at month-end, and
-    alignment clipping at IFS_END are all accounted for correctly.
+    FC chunks are grouped by INIT-TIME month (not valid-time month), so the
+    expected set is simply init_months × leads with no spillover or boundary
+    complexity. Expected inits per month = 2 × days_in_month (fc_end extends
+    the last day to T12 so both T00 and T12 are always included).
 
-    Init enumeration mirrors build_fc_files exactly:
-    pd.date_range(start, end, freq='12h') stops AT end midnight (IFS_END T00),
-    so the last init is IFS_END 00:00, not 12:00.
-
-    IFS FC valid-times are clipped at IFS_END because alignment against IFS AN
-    (which also stops at IFS_END T00) drops any FC with vt > IFS_END midnight.
-
-    AIFS FC is not aligned, so spillover beyond AIFS_END is kept as-is.
-
-    IFS AN: build_an_files uses an_end = fc_end + max(LEAD_TIMES), so it covers
-    all FC valid_times including spillover into the next calendar year.
+    IFS AN chunks are grouped by analysis-time month. AN discovery extends to
+    fc_end + max(LEAD_TIMES) so it covers all valid_times reachable from the
+    FC init range (including into the next year when IFS_END is updated).
     """
-    from datetime import timedelta as _td
+    expected  = {"ifs_fc_monthly": set(), "aifs_fc_monthly": set(), "ifs_an_monthly": set()}
+    exp_times = {}  # basename -> expected unique time count
 
-    expected    = {"ifs_fc_monthly": set(), "aifs_fc_monthly": set(), "ifs_an_monthly": set()}
-    exp_times   = {}  # basename -> expected unique valid_time count
-
-    # Mirrors aggregate_fc_an_2t.py's fc_end / an_end derivation:
-    #   fc_end = IFS_END + 12h  (include T12 init on last FC day)
-    #   an_end = fc_end + max(LEAD_TIMES)  (cover every reachable FC valid_time)
-    # IFS FC alignment clips at ifs_an_end_dt; any FC vt beyond that is dropped.
-    ifs_fc_end_dt = datetime.strptime(IFS_END, "%Y-%m-%d") + _td(hours=12)
-    ifs_an_end_dt = ifs_fc_end_dt + _td(hours=max(LEAD_TIMES))
-
-    # --- FC streams ---
-    for tag, stem, start_str, end_str, clip_at_an_end in [
-        ("ifs_fc_monthly",  "ifs_fc_2t_county",  IFS_START,  IFS_END,  True),
-        ("aifs_fc_monthly", "aifs_fc_2t_county", AIFS_START, AIFS_END, False),
+    # --- FC streams: one chunk per (init_month, lead) ---
+    for tag, stem, start_str, end_str in [
+        ("ifs_fc_monthly",  "ifs_fc_2t_county",  IFS_START,  IFS_END),
+        ("aifs_fc_monthly", "aifs_fc_2t_county", AIFS_START, AIFS_END),
     ]:
-        start  = datetime.strptime(start_str, "%Y-%m-%d")
-        # FC end = last day midnight + 12h, matching fc_end = pd.Timestamp(END) + 12h.
-        # For IFS FC this is ifs_fc_end_dt; for AIFS FC it's computed the same way.
-        fc_end_dt = datetime.strptime(end_str, "%Y-%m-%d") + _td(hours=12)
-
-        counts = {}  # (yr, mo, lead) -> n_unique_valid_times
-        init_dt = start
-        while init_dt <= fc_end_dt:
+        for yr, mo, first, last in _iter_year_months(start_str, end_str):
+            days = calendar.monthrange(yr, mo)[1]
+            # fc_end = END + 12h ensures both T00 and T12 are included on the
+            # last day, so every month always has 2 × days inits.
+            n_inits = 2 * days
             for lead in LEAD_TIMES:
-                vt = init_dt + _td(hours=lead)
-                if clip_at_an_end and vt > ifs_an_end_dt:
-                    continue  # alignment drops: IFS AN doesn't cover beyond IFS_END+18h
-                k = (vt.year, vt.month, lead)
-                counts[k] = counts.get(k, 0) + 1
-            init_dt += _td(hours=12)
+                name = f"{stem}_{yr}_{mo:02d}_lead{lead:03d}.parquet"
+                expected[tag].add(name)
+                exp_times[name] = n_inits
 
-        for (yr, mo, lead), n in counts.items():
-            name = f"{stem}_{yr}_{mo:02d}_lead{lead:03d}.parquet"
-            expected[tag].add(name)
-            exp_times[name] = n
-
-    # --- IFS AN ---
-    # build_an_files uses an_end = fc_end + max(LEAD_TIMES), covering all
-    # valid_times reachable from the FC init range (including into the next year).
-    an_start  = datetime.strptime(IFS_START, "%Y-%m-%d")
-    an_counts = {}  # (yr, mo) -> n
-    t = an_start
-    while t <= ifs_an_end_dt:
-        k = (t.year, t.month)
-        an_counts[k] = an_counts.get(k, 0) + 1
-        t += _td(hours=6)
-    for (yr, mo), n in an_counts.items():
+    # --- IFS AN: one chunk per analysis month ---
+    # AN discovery extends to fc_end + max(LEAD_TIMES) to cover all FC valid_times.
+    from datetime import timedelta as _td
+    an_end_dt = (datetime.strptime(IFS_END, "%Y-%m-%d")
+                 + _td(hours=12 + max(LEAD_TIMES)))
+    an_end_str = f"{an_end_dt.year}-{an_end_dt.month:02d}-{an_end_dt.day:02d}"
+    for yr, mo, first, last in _iter_year_months(IFS_START, an_end_str):
+        days_in_range = (last - first).days + 1
         name = f"ifs_an_2t_county_{yr}_{mo:02d}.parquet"
         expected["ifs_an_monthly"].add(name)
-        exp_times[name] = n
+        exp_times[name] = 4 * days_in_range  # 4 analysis times per day
 
     return expected, exp_times
 
