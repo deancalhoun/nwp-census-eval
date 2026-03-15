@@ -516,19 +516,39 @@ _AN_CHUNK_PAT = re.compile(
 
 def _expected_fc_an_parquets():
     """
-    Return expected parquet filenames (basenames) for each subdir, derived from
-    the config date ranges and lead times.
+    Return expected parquet filenames (basenames) for each subdir.
+
+    FC chunks are named by VALID-TIME month (init + lead), matching
+    aggregate_fc_an_2t.py's _group_fc_by_lead_month. Using init-time month
+    instead would miss spillover chunks where long leads push valid_time into
+    the following month (e.g. 2025-12-31 + 240h → 2026-01).
+    AN chunks are simply one per month in the IFS date range.
     """
+    from datetime import timedelta as _td
+    init_hours_int = [int(h[:2]) for h in INIT_HOURS]  # ["0000","1200"] → [0,12]
+
     expected = {"ifs_fc_monthly": set(), "aifs_fc_monthly": set(), "ifs_an_monthly": set()}
 
-    for yr, mo, _, _ in _iter_year_months(IFS_START, IFS_END):
-        for lead in LEAD_TIMES:
-            expected["ifs_fc_monthly"].add(f"ifs_fc_2t_county_{yr}_{mo:02d}_lead{lead:03d}.parquet")
-        expected["ifs_an_monthly"].add(f"ifs_an_2t_county_{yr}_{mo:02d}.parquet")
+    for tag, stem, start_str, end_str in [
+        ("ifs_fc_monthly",  "ifs_fc_2t_county",  IFS_START,  IFS_END),
+        ("aifs_fc_monthly", "aifs_fc_2t_county", AIFS_START, AIFS_END),
+    ]:
+        start = datetime.strptime(start_str, "%Y-%m-%d")
+        end   = datetime.strptime(end_str,   "%Y-%m-%d")
+        keys = set()
+        d = start
+        while d <= end:
+            for h in init_hours_int:
+                init_dt = d.replace(hour=h)
+                for lead in LEAD_TIMES:
+                    vt = init_dt + _td(hours=lead)
+                    keys.add((vt.year, vt.month, lead))
+            d += _td(days=1)
+        for yr, mo, lead in keys:
+            expected[tag].add(f"{stem}_{yr}_{mo:02d}_lead{lead:03d}.parquet")
 
-    for yr, mo, _, _ in _iter_year_months(AIFS_START, AIFS_END):
-        for lead in LEAD_TIMES:
-            expected["aifs_fc_monthly"].add(f"aifs_fc_2t_county_{yr}_{mo:02d}_lead{lead:03d}.parquet")
+    for yr, mo, _, _ in _iter_year_months(IFS_START, IFS_END):
+        expected["ifs_an_monthly"].add(f"ifs_an_2t_county_{yr}_{mo:02d}.parquet")
 
     return expected
 
