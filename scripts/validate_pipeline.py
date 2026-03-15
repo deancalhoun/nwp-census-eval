@@ -220,7 +220,12 @@ def check_source_files():
                 tasks.append(("aifs_fc", (init_hour, lead, yr, mo), d, (last - first).days + 1))
 
     # IFS AN: {IFS_AN_DIR}/{year}/{month:02d}/
-    for yr, mo, first, last in _iter_year_months(IFS_START, IFS_END):
+    # AN must cover through fc_end + max(LEAD_TIMES) so every FC valid_time
+    # has a matching analysis (including spillover into the next year).
+    from datetime import timedelta as _td_p1
+    _an_end_dt = datetime.strptime(IFS_END, "%Y-%m-%d") + _td_p1(hours=12 + max(LEAD_TIMES))
+    _an_end_str = f"{_an_end_dt.year}-{_an_end_dt.month:02d}-{_an_end_dt.day:02d}"
+    for yr, mo, first, last in _iter_year_months(IFS_START, _an_end_str):
         d = os.path.join(IFS_AN_DIR, str(yr), f"{mo:02d}")
         tasks.append(("ifs_an", (yr, mo), d, (last - first).days + 1))
 
@@ -533,18 +538,20 @@ def _expected_fc_an_parquets():
 
     AIFS FC is not aligned, so spillover beyond AIFS_END is kept as-is.
 
-    IFS AN: build_an_files uses pd.date_range at 6h stopping at IFS_END T00,
-    so Dec 31 contributes only T00 (not T06/T12/T18).
+    IFS AN: build_an_files uses an_end = fc_end + max(LEAD_TIMES), so it covers
+    all FC valid_times including spillover into the next calendar year.
     """
     from datetime import timedelta as _td
 
     expected    = {"ifs_fc_monthly": set(), "aifs_fc_monthly": set(), "ifs_an_monthly": set()}
     exp_times   = {}  # basename -> expected unique valid_time count
 
-    # aggregate_fc_an_2t.py extends END by one freq step so pd.date_range includes
-    # the full last day: fc_end = END + 12h, an_end = END + 18h.
-    # IFS FC alignment clips at the last AN time (END + 18h), not END midnight.
-    ifs_an_end_dt = datetime.strptime(IFS_END, "%Y-%m-%d") + _td(hours=18)
+    # Mirrors aggregate_fc_an_2t.py's fc_end / an_end derivation:
+    #   fc_end = IFS_END + 12h  (include T12 init on last FC day)
+    #   an_end = fc_end + max(LEAD_TIMES)  (cover every reachable FC valid_time)
+    # IFS FC alignment clips at ifs_an_end_dt; any FC vt beyond that is dropped.
+    ifs_fc_end_dt = datetime.strptime(IFS_END, "%Y-%m-%d") + _td(hours=12)
+    ifs_an_end_dt = ifs_fc_end_dt + _td(hours=max(LEAD_TIMES))
 
     # --- FC streams ---
     for tag, stem, start_str, end_str, clip_at_an_end in [
@@ -552,12 +559,13 @@ def _expected_fc_an_parquets():
         ("aifs_fc_monthly", "aifs_fc_2t_county", AIFS_START, AIFS_END, False),
     ]:
         start  = datetime.strptime(start_str, "%Y-%m-%d")
-        # FC end extended by 12h to include T12 init on last day (matches fc_end in main())
-        end_dt = datetime.strptime(end_str, "%Y-%m-%d") + _td(hours=12)
+        # FC end = last day midnight + 12h, matching fc_end = pd.Timestamp(END) + 12h.
+        # For IFS FC this is ifs_fc_end_dt; for AIFS FC it's computed the same way.
+        fc_end_dt = datetime.strptime(end_str, "%Y-%m-%d") + _td(hours=12)
 
         counts = {}  # (yr, mo, lead) -> n_unique_valid_times
         init_dt = start
-        while init_dt <= end_dt:
+        while init_dt <= fc_end_dt:
             for lead in LEAD_TIMES:
                 vt = init_dt + _td(hours=lead)
                 if clip_at_an_end and vt > ifs_an_end_dt:
@@ -572,8 +580,8 @@ def _expected_fc_an_parquets():
             exp_times[name] = n
 
     # --- IFS AN ---
-    # build_an_files uses an_end = IFS_END + 18h, so Dec 31 contributes all 4
-    # analysis times (T00, T06, T12, T18).
+    # build_an_files uses an_end = fc_end + max(LEAD_TIMES), covering all
+    # valid_times reachable from the FC init range (including into the next year).
     an_start  = datetime.strptime(IFS_START, "%Y-%m-%d")
     an_counts = {}  # (yr, mo) -> n
     t = an_start

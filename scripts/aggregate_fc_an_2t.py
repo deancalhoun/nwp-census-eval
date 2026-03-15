@@ -459,12 +459,13 @@ def main(n_parallel=1, write_full_tables=False):
     n_parallel = max(1, int(n_parallel))
 
     # 1. Discover files
-    # Extend END by one step of each frequency so pd.date_range includes the full
-    # last day: without this, date_range(end='2025-12-31', freq='12h') stops at
-    # T00, missing the T12 FC init; date_range at 6h stops at T00, missing
-    # the T06/T12/T18 analysis times on Dec 31.
-    fc_end = pd.Timestamp(END) + pd.Timedelta(hours=12)   # include T12 init on last day
-    an_end = pd.Timestamp(END) + pd.Timedelta(hours=18)   # include T18 analysis on last day
+    # fc_end: extend by one FC step so pd.date_range includes the T12 init on the
+    # last day (without this, date_range(end='YYYY-MM-DD', freq='12h') stops at T00).
+    # an_end: derived from fc_end + max lead time so the AN covers every valid_time
+    # reachable from the FC init range; this also means the AN automatically extends
+    # into the next year when IFS_END is updated (e.g. to 2026-XX-XX).
+    fc_end = pd.Timestamp(END) + pd.Timedelta(hours=12)
+    an_end = fc_end + pd.Timedelta(hours=max(LEAD_TIMES))
     t_disc = time.time()
     logging.info("Building file lists ...")
     fc_files_ifs  = build_fc_files(FC_DIR,      START, fc_end, FC_FREQ, LEAD_TIMES)
