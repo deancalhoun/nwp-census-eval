@@ -4,7 +4,7 @@ scripts/validate_pipeline.py — Comprehensive pipeline validation.
 Sequential, always-full validation flow:
   Phase 1:  Source NC files (file counts + xarray content check, parallel)
   Phase 2a: ERA5 aggregation (monthly parquets + climatology)
-  Phase 2b: IFS/AIFS aggregation (checkpoint completeness via sidecars)
+  Phase 2b: IFS/AIFS aggregation (checkpoint completeness)
   Phase 3:  Derived outputs (informational only)
 
 Usage:
@@ -13,7 +13,6 @@ Usage:
 """
 
 import calendar
-import json
 import os
 import sys
 import argparse
@@ -80,16 +79,6 @@ def _parquet_unique_count(path, col):
     except Exception:
         return 0
 
-
-def _read_sidecar_n_source(parquet_path):
-    """Return n_source_files from .checkpoint.json sidecar, or None if absent/unreadable."""
-    base, _ = os.path.splitext(parquet_path)
-    sidecar = base + ".checkpoint.json"
-    try:
-        with open(sidecar) as f:
-            return int(json.load(f)["n_source_files"])
-    except Exception:
-        return None
 
 
 def _iter_year_months(start_str, end_str):
@@ -409,10 +398,12 @@ def check_era5_aggregation(source_status):
 
             if source_count is not None:
                 # Each ERA5 source file covers a full month; the parquet should have
-                # one unique time per day (aggregation extracts daily values from the
-                # monthly file). Compare against days-in-month, not source file count.
+                # one unique time per day. Feb 29 is excluded by aggregate_era5_2t.py,
+                # so leap Februaries legitimately have 28 days, not 29.
                 unique_times = _parquet_unique_count(path, "time")
                 expected_days = calendar.monthrange(yr, mo)[1]
+                if mo == 2 and calendar.isleap(yr):
+                    expected_days -= 1
                 if unique_times != expected_days:
                     n_stale += 1
                     flagged.append((path, f"STALE ({unique_times} times != {expected_days} expected days)"))
@@ -500,7 +491,7 @@ def check_fc_an_aggregation():
             continue
 
         paths = sorted(glob.glob(os.path.join(monthly_dir, "*.parquet")))
-        n_ok = n_incomplete = n_legacy_ok = n_legacy_incomplete = 0
+        n_ok = n_incomplete = 0
         detail_lines = []
 
         for path in paths:
@@ -509,43 +500,25 @@ def check_fc_an_aggregation():
                 continue
 
             yr, mo = int(m.group("yr")), int(m.group("mo"))
-            n_source = _read_sidecar_n_source(path)
-            is_legacy = n_source is None
-
-            if is_legacy:
-                # No sidecar: fall back to theoretical max.
-                # FC chunks: 2 init hours/day; AN chunks: 4 analysis times/day.
-                days = calendar.monthrange(yr, mo)[1]
-                n_source = 4 * days if subdir.endswith("an_monthly") else 2 * days
+            days = calendar.monthrange(yr, mo)[1]
+            # Theoretical max: FC has 2 init hours/day; AN has 4 analysis times/day.
+            expected = 4 * days if subdir.endswith("an_monthly") else 2 * days
 
             unique_times = _parquet_unique_count(path, time_col)
-            if unique_times < n_source:
-                if is_legacy:
-                    n_legacy_incomplete += 1
-                    flagged.append((path, f"LEGACY_INCOMPLETE ({unique_times}/{n_source} theoretical max)"))
-                    if len(detail_lines) < _MAX_DETAIL_LINES:
-                        detail_lines.append(
-                            f"    LEGACY_INCOMPLETE  {os.path.basename(path)} ({unique_times}/{n_source})"
-                        )
-                else:
-                    n_incomplete += 1
-                    flagged.append((path, f"INCOMPLETE ({unique_times}/{n_source})"))
-                    if len(detail_lines) < _MAX_DETAIL_LINES:
-                        detail_lines.append(
-                            f"    INCOMPLETE  {os.path.basename(path)} ({unique_times}/{n_source})"
-                        )
+            if unique_times < expected:
+                n_incomplete += 1
+                flagged.append((path, f"INCOMPLETE ({unique_times}/{expected})"))
+                if len(detail_lines) < _MAX_DETAIL_LINES:
+                    detail_lines.append(
+                        f"    INCOMPLETE  {os.path.basename(path)} ({unique_times}/{expected})"
+                    )
             else:
-                if is_legacy:
-                    n_legacy_ok += 1
-                else:
-                    n_ok += 1
+                n_ok += 1
 
-        total = n_ok + n_incomplete + n_legacy_ok + n_legacy_incomplete
+        total = n_ok + n_incomplete
         print(
             f"  {subdir}: {total} parquets — {n_ok} OK"
-            + (f", {n_legacy_ok} OK (no sidecar)" if n_legacy_ok else "")
             + (f", {n_incomplete} incomplete" if n_incomplete else "")
-            + (f", {n_legacy_incomplete} incomplete (no sidecar)" if n_legacy_incomplete else "")
         )
         for line in detail_lines:
             print(line)
@@ -671,16 +644,6 @@ def cleanup(corrupt_nc, flagged_era5, flagged_fc_an, remove_clim):
             print(f"  WARNING: could not delete {path}: {exc}")
             continue
         print(f"  REMOVED  {path}  [{reason}]")
-        # Remove sidecars
-        base, _ = os.path.splitext(path)
-        for ext in (".checkpoint.json", ".meta.json"):
-            sc = base + ext
-            if os.path.exists(sc):
-                try:
-                    os.remove(sc)
-                    print(f"  REMOVED  {sc}")
-                except OSError as exc:
-                    print(f"  WARNING: could not delete {sc}: {exc}")
 
     if remove_clim and os.path.exists(ERA5_CLIM_PATH):
         try:
@@ -704,9 +667,9 @@ def main(argv=None):
         "--cleanup",
         action="store_true",
         help=(
-            "Remove flagged artifacts: corrupt NC files, incomplete/legacy checkpoint "
-            "parquets (+ their sidecars), and ERA5 climatology if stale monthly parquets "
-            "were removed. Does NOT delete missing source files or derived outputs."
+            "Remove flagged artifacts: corrupt NC files, incomplete checkpoint parquets, "
+            "and ERA5 climatology if stale monthly parquets were removed. "
+            "Does NOT delete missing source files or derived outputs."
         ),
     )
     args = parser.parse_args(argv)

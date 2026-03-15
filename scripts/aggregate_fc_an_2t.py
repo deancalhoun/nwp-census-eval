@@ -284,11 +284,6 @@ def _is_chunk_done(tag, group_key):
         return False
 
 
-def _chunk_sidecar_path(parquet_path):
-    base, _ = os.path.splitext(parquet_path)
-    return base + ".checkpoint.json"
-
-
 def _write_chunk_atomic(tag, group_key, df, n_source_files):
     if tag in ("ifs_fc", "aifs_fc"):
         lead, yr, mo = group_key
@@ -299,13 +294,6 @@ def _write_chunk_atomic(tag, group_key, df, n_source_files):
     tmp = path + ".tmp"
     df.to_parquet(tmp, index=False)
     os.replace(tmp, path)
-    # Sidecar records post-alignment source file count so validate_pipeline.py
-    # can compare against the actual aligned expected rather than theoretical max.
-    sidecar = _chunk_sidecar_path(path)
-    tmp_sc = sidecar + ".tmp"
-    with open(tmp_sc, "w") as f:
-        json.dump({"n_source_files": n_source_files}, f)
-    os.replace(tmp_sc, sidecar)
     logging.info("Checkpoint: %s (%d rows)", os.path.basename(path), len(df))
 
 
@@ -348,9 +336,6 @@ def _invalidate_incomplete_chunks(all_chunks):
             )
             try:
                 os.remove(path)
-                sidecar = _chunk_sidecar_path(path)
-                if os.path.exists(sidecar):
-                    os.remove(sidecar)
                 n_invalidated += 1
             except OSError as exc:
                 logging.warning("Could not remove %s: %s", path, exc)
