@@ -1,22 +1,15 @@
 """
-scripts/validate_pipeline.py — Pipeline status report.
+scripts/validate_pipeline.py — Comprehensive pipeline validation.
 
-Reads file paths and parquet metadata without loading full data into memory.
-Prints one block per section; exits with code 0 if all OK, 1 if any MISSING.
-
-Sections (always run):
-    ERA5 monthly parquets, ERA5 climatology, aggregation outputs,
-    checkpoint completeness, Koppen-Geiger, ACS data.
-
-Opt-in sections (slow on large file trees):
-    --nc-sweep / --fix-grib / --remove-corrupt  — magic-byte sweep
-    --content-check / --remove-bad-content      — xarray variable check
-    --check-downloads                           — file counts vs. config manifest
+Sequential, always-full validation flow:
+  Phase 1:  Source NC files (file counts + xarray content check, parallel)
+  Phase 2a: ERA5 aggregation (monthly parquets + climatology)
+  Phase 2b: IFS/AIFS aggregation (checkpoint completeness via sidecars)
+  Phase 3:  Derived outputs (informational only)
 
 Usage:
-    python scripts/validate_pipeline.py                  # fast default check
-    python scripts/validate_pipeline.py --check-downloads --nc-sweep
-    python scripts/validate_pipeline.py --fix-grib --remove-corrupt
+    python scripts/validate_pipeline.py            # report only
+    python scripts/validate_pipeline.py --cleanup  # report + remove flagged artifacts
 """
 
 import calendar
@@ -26,9 +19,8 @@ import sys
 import argparse
 import glob
 import re
-import subprocess
-from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime
 
 import pyarrow.parquet as pq
 
@@ -43,6 +35,7 @@ from config import (
     KOPPEN_PATH,
     ERA5_CLIM_START,
     ERA5_CLIM_END,
+    ERA5_DIR,
     IFS_FC_DIR,
     IFS_AN_DIR,
     AIFS_FC_DIR,
@@ -54,24 +47,16 @@ from config import (
     INIT_HOURS,
 )
 
-_MARKER = {
-    "OK":      "[OK     ]",
-    "PARTIAL": "[PARTIAL]",
-    "MISSING": "[MISSING]",
-    "SKIP":    "[SKIP   ]",
-}
+_SWEEP_WORKERS = 32
+_MAX_DETAIL_LINES = 20
 
 
-def _status(label, status, detail=""):
-    marker = _MARKER.get(status, f"[{status}]")
-    msg = f"  {marker}  {label}"
-    if detail:
-        msg += f"\n             {detail}"
-    return msg, status
-
+# ---------------------------------------------------------------------------
+# Low-level helpers
+# ---------------------------------------------------------------------------
 
 def _parquet_row_count(path):
-    """Return total row count from parquet metadata without loading data."""
+    """Metadata-only row count; returns None on error."""
     try:
         meta = pq.read_metadata(path)
         return sum(meta.row_group(i).num_rows for i in range(meta.num_row_groups))
@@ -87,93 +72,8 @@ def _parquet_schema_names(path):
         return None
 
 
-def _parquet_date_range(path, col):
-    """Read a single column to get min/max without loading all columns."""
-    try:
-        tbl = pq.read_table(path, columns=[col])
-        series = tbl.to_pandas()[col]
-        return series.min(), series.max()
-    except Exception:
-        return None, None
-
-
-# ---------------------------------------------------------------------------
-# Check functions
-# ---------------------------------------------------------------------------
-
-def check_era5_monthly():
-    start_yr = int(ERA5_CLIM_START[:4])
-    end_yr = int(ERA5_CLIM_END[:4])
-    monthly_dir = os.path.join(AGGREGATED_DIR, "era5_monthly")
-    expected = [(yr, mo) for yr in range(start_yr, end_yr + 1) for mo in range(1, 13)]
-    present, missing = [], []
-    for yr, mo in expected:
-        path = os.path.join(monthly_dir, f"era5_2t_county_{yr}_{mo:02d}.parquet")
-        if os.path.exists(path) and _parquet_row_count(path) is not None:
-            present.append((yr, mo))
-        else:
-            missing.append((yr, mo))
-
-    n_exp, n_pres = len(expected), len(present)
-    if n_pres == n_exp:
-        return _status(f"ERA5 monthly parquets ({n_exp} months)", "OK",
-                       f"all {n_exp} months present in {monthly_dir}")
-    elif n_pres > 0:
-        return _status(f"ERA5 monthly parquets ({n_pres}/{n_exp} months)", "PARTIAL",
-                       f"missing {len(missing)} month(s); first: {missing[0][0]}-{missing[0][1]:02d}")
-    else:
-        return _status("ERA5 monthly parquets", "MISSING", f"none found in {monthly_dir}")
-
-
-def check_era5_climatology():
-    if not os.path.exists(ERA5_CLIM_PATH):
-        return _status("ERA5 climatology", "MISSING", ERA5_CLIM_PATH)
-    try:
-        names = _parquet_schema_names(ERA5_CLIM_PATH)
-        required = {"t2m_clim", "geo_id", "day_of_year"}
-        if names is None or not required.issubset(names):
-            missing_cols = required - (names or set())
-            return _status("ERA5 climatology", "PARTIAL", f"missing columns: {missing_cols}")
-        mn, mx = _parquet_date_range(ERA5_CLIM_PATH, "day_of_year")
-        n_doys = (mx - mn + 1) if (mn is not None and mx is not None) else "?"
-        rows = _parquet_row_count(ERA5_CLIM_PATH)
-        if mn == 1 and mx == 365:
-            return _status("ERA5 climatology", "OK",
-                           f"{rows:,} rows | DOY 1–365 — {ERA5_CLIM_PATH}")
-        else:
-            return _status("ERA5 climatology", "PARTIAL",
-                           f"{rows:,} rows | DOY {mn}–{mx} (expected 1–365)")
-    except Exception as exc:
-        return _status("ERA5 climatology", "MISSING", str(exc))
-
-
-def _check_monthly_dir(label, monthly_dir):
-    """Check a monthly-checkpoint directory; report parquet count."""
-    if not os.path.isdir(monthly_dir):
-        return _status(label, "MISSING", f"directory not found: {monthly_dir}")
-    parquets = glob.glob(os.path.join(monthly_dir, "*.parquet"))
-    n = len(parquets)
-    if n == 0:
-        return _status(label, "MISSING", f"no parquets in {monthly_dir}")
-    readable = sum(1 for p in parquets if _parquet_row_count(p) is not None)
-    if readable < n:
-        return _status(label, "PARTIAL",
-                       f"{readable}/{n} parquets readable in {monthly_dir}")
-    return _status(label, "OK", f"{n:,} monthly parquets — {monthly_dir}")
-
-
-_FC_CHUNK_PAT = re.compile(
-    r"(?P<tag>ifs_fc|aifs_fc)_2t_county_(?P<yr>\d{4})_(?P<mo>\d{2})_lead(?P<lead>\d+)\.parquet$"
-)
-_AN_CHUNK_PAT = re.compile(
-    r"ifs_an_2t_county_(?P<yr>\d{4})_(?P<mo>\d{2})\.parquet$"
-)
-_FC_INIT_FREQ_PER_DAY  = 2   # 12-hourly: 0000Z + 1200Z
-_AN_FREQ_PER_DAY       = 4   # 6-hourly
-
-
-def _unique_time_count(path, col):
-    """Read one column from a parquet and return nunique (0 on error)."""
+def _parquet_unique_count(path, col):
+    """Read one column and return nunique; 0 on error."""
     try:
         tbl = pq.read_table(path, columns=[col])
         return tbl[col].to_pandas().nunique()
@@ -182,7 +82,7 @@ def _unique_time_count(path, col):
 
 
 def _read_sidecar_n_source(parquet_path):
-    """Return n_source_files from the .checkpoint.json sidecar, or None if absent/unreadable."""
+    """Return n_source_files from .checkpoint.json sidecar, or None if absent/unreadable."""
     base, _ = os.path.splitext(parquet_path)
     sidecar = base + ".checkpoint.json"
     try:
@@ -192,438 +92,8 @@ def _read_sidecar_n_source(parquet_path):
         return None
 
 
-def check_checkpoint_completeness():
-    """
-    Read the time column from every monthly checkpoint parquet and compare
-    unique counts against the expected count for that chunk.
-
-    Expected count comes from the per-chunk .checkpoint.json sidecar written
-    at aggregation time, which records the post-alignment source file count.
-    This is the ground truth: alignment may legitimately drop some init times
-    (e.g. valid_time falls outside the AN date window), so the theoretical
-    max (freq × days_in_month) would produce false positives for those chunks.
-
-    For parquets written before sidecar support was added (no sidecar file),
-    the theoretical max is used as a fallback — these are noted separately.
-    """
-    chunks = [
-        # (subdir, pattern, time_col, freq_per_day)
-        ("ifs_fc_monthly",   _FC_CHUNK_PAT, "valid_time", _FC_INIT_FREQ_PER_DAY),
-        ("aifs_fc_monthly",  _FC_CHUNK_PAT, "valid_time", _FC_INIT_FREQ_PER_DAY),
-        ("ifs_an_monthly",   _AN_CHUNK_PAT, "time",       _AN_FREQ_PER_DAY),
-    ]
-
-    incomplete = []       # (name, actual, expected, has_sidecar)
-    total_checked = 0
-    n_no_sidecar = 0
-
-    for subdir, pat, time_col, freq in chunks:
-        monthly_dir = os.path.join(AGGREGATED_DIR, subdir)
-        if not os.path.isdir(monthly_dir):
-            continue
-        for path in sorted(glob.glob(os.path.join(monthly_dir, "*.parquet"))):
-            m = pat.search(os.path.basename(path))
-            if not m:
-                continue
-            yr, mo = int(m.group("yr")), int(m.group("mo"))
-            total_checked += 1
-
-            n_source = _read_sidecar_n_source(path)
-            if n_source is not None:
-                expected = n_source
-                has_sidecar = True
-            else:
-                # Fallback: theoretical max
-                expected = freq * calendar.monthrange(yr, mo)[1]
-                has_sidecar = False
-                n_no_sidecar += 1
-
-            actual = _unique_time_count(path, time_col)
-            if actual < expected:
-                incomplete.append((os.path.basename(path), actual, expected, has_sidecar))
-
-    if total_checked == 0:
-        return _status("Checkpoint completeness", "SKIP", "no monthly parquets found")
-
-    if not incomplete:
-        note = (f"; {n_no_sidecar} used theoretical-max fallback (no sidecar)"
-                if n_no_sidecar else "")
-        return _status(
-            "Checkpoint completeness", "OK",
-            f"all {total_checked} monthly parquets complete{note}",
-        )
-
-    # Separate sidecar-backed (reliable) from theoretical-max (may include alignment artifacts)
-    reliable   = [(n, a, e) for n, a, e, s in incomplete if s]
-    fallback   = [(n, a, e) for n, a, e, s in incomplete if not s]
-
-    lines = [f"{len(incomplete)}/{total_checked} parquet(s) below expected:"]
-    if reliable:
-        lines.append(f"  confirmed ({len(reliable)}, sidecar-backed):")
-        for name, act, exp in reliable[:10]:
-            lines.append(f"    {name} ({act}/{exp})")
-        if len(reliable) > 10:
-            lines.append(f"    … and {len(reliable) - 10} more")
-    if fallback:
-        lines.append(
-            f"  possible ({len(fallback)}, no sidecar — may be alignment artifacts):"
-        )
-        for name, act, exp in fallback[:10]:
-            lines.append(f"    {name} ({act}/{exp})")
-        if len(fallback) > 10:
-            lines.append(f"    … and {len(fallback) - 10} more")
-    if reliable:
-        lines.append("  → re-run aggregate_fc_an_2t.py --verify-checkpoints")
-    if fallback:
-        lines.append("  → re-aggregate to write sidecars and confirm")
-    return _status("Checkpoint completeness", "PARTIAL", "\n             ".join(lines))
-
-
-def check_aggregation_outputs():
-    results = []
-    any_missing = False
-
-    # Raw aggregation outputs (monthly checkpoint parquets)
-    for label, subdir in [
-        ("IFS forecast (monthly)", "ifs_fc_monthly"),
-        ("IFS analysis (monthly)", "ifs_an_monthly"),
-        ("AIFS forecast (monthly)", "aifs_fc_monthly"),
-    ]:
-        msg, status = _check_monthly_dir(label, os.path.join(AGGREGATED_DIR, subdir))
-        results.append((msg, status))
-        if status == "MISSING":
-            any_missing = True
-
-    # Derived outputs (single parquets written by compute_derived_2t.py)
-    derived = {
-        "IFS bias":     "ifs_fc_bias_2t_county.parquet",
-        "IFS bias+anom": "ifs_fc_bias_anom_2t_county.parquet",
-        "AIFS bias":    "aifs_fc_bias_2t_county.parquet",
-        "AIFS bias+anom": "aifs_fc_bias_anom_2t_county.parquet",
-        "AIFS vs IFS":  "aifs_vs_ifs_fc_bias_comparison_2t_county.parquet",
-    }
-    for label, fname in derived.items():
-        path = os.path.join(AGGREGATED_DIR, fname)
-        if not os.path.exists(path):
-            results.append(_status(label, "MISSING", path))
-            any_missing = True
-        else:
-            rows = _parquet_row_count(path)
-            if rows is None:
-                results.append(_status(label, "MISSING", f"unreadable: {path}"))
-                any_missing = True
-            else:
-                for col in ("valid_time", "time"):
-                    names = _parquet_schema_names(path) or set()
-                    if col in names:
-                        mn, mx = _parquet_date_range(path, col)
-                        if mn is not None:
-                            results.append(_status(label, "OK", f"{rows:,} rows | {mn} to {mx}"))
-                            break
-                else:
-                    results.append(_status(label, "OK", f"{rows:,} rows"))
-
-    return results, any_missing
-
-
-def check_koppen():
-    out_path = os.path.join(AGGREGATED_DIR, "koppen_geiger_county.parquet")
-    tif_ok = os.path.exists(KOPPEN_PATH)
-    tif_status = "present" if tif_ok else "MISSING"
-    if not os.path.exists(out_path):
-        return _status("Koppen-Geiger", "MISSING",
-                       f"GeoTIFF {tif_status}: {KOPPEN_PATH} | output not found: {out_path}")
-    rows = _parquet_row_count(out_path)
-    if rows is None:
-        return _status("Koppen-Geiger", "MISSING", f"output unreadable: {out_path}")
-    return _status("Koppen-Geiger", "OK",
-                   f"GeoTIFF {tif_status} | {rows:,} rows — {out_path}")
-
-
-def check_acs():
-    path = os.path.join(ACS_DIR, f"acs_5yr_{ACS_YEAR}", f"acs_5yr_{ACS_YEAR}_{ACS_LEVEL}.parquet")
-    if not os.path.exists(path):
-        return _status("ACS data", "MISSING", path)
-    rows = _parquet_row_count(path)
-    if rows is None:
-        return _status("ACS data", "MISSING", f"unreadable: {path}")
-    return _status("ACS data", "OK", f"{rows:,} rows — {path}")
-
-
-# ---------------------------------------------------------------------------
-# GRIB-format .nc file sweep
-# ---------------------------------------------------------------------------
-_GRIB_MAGIC  = b"GRIB"
-_NC3_MAGIC   = (b"CDF\x01", b"CDF\x02")
-_HDF5_MAGIC  = b"\x89HDF"
-_SWEEP_WORKERS = 32  # I/O-bound; more threads = faster on parallel filesystems
-
-
-def _classify_file(path):
-    """Return 'ok', 'grib', or 'corrupt' based on the file's magic bytes."""
-    try:
-        with open(path, "rb") as f:
-            magic = f.read(4)
-        if magic == _GRIB_MAGIC:
-            return "grib"
-        if magic[:3] == b"CDF" or magic == _HDF5_MAGIC:
-            return "ok"
-        return "corrupt"
-    except OSError:
-        return "corrupt"
-
-
-def _scan_dir_parallel(directory):
-    """Return (n_total, grib_files, corrupt_files) for a directory tree."""
-    nc_files = glob.glob(os.path.join(directory, "**", "*.nc"), recursive=True)
-    if not nc_files:
-        return 0, [], []
-
-    try:
-        from tqdm import tqdm
-        bar = tqdm(total=len(nc_files), desc=f"  scanning {os.path.basename(directory)}",
-                   unit="file", leave=False)
-    except ImportError:
-        bar = None
-
-    grib_files, corrupt_files = [], []
-    with ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
-        futures = {pool.submit(_classify_file, p): p for p in nc_files}
-        for fut in as_completed(futures):
-            kind = fut.result()
-            if kind == "grib":
-                grib_files.append(futures[fut])
-            elif kind == "corrupt":
-                corrupt_files.append(futures[fut])
-            if bar:
-                bar.update(1)
-    if bar:
-        bar.close()
-    return len(nc_files), grib_files, corrupt_files
-
-
-def check_grib_nc_files(fix=False, remove_corrupt=False):
-    """Scan all .nc files in the IFS/AIFS directories for format problems.
-
-    Reads only the first 4 bytes of each file (magic bytes) using 32 threads
-    in parallel. Detects both GRIB-format files (unconverted) and corrupt files
-    (neither NetCDF3/4 nor GRIB — e.g. truncated downloads).
-    If fix=True, runs grib_to_netcdf in-place on GRIB files.
-    If remove_corrupt=True, deletes corrupt files so they can be re-downloaded.
-    """
-    dirs = {
-        "IFS fc":  IFS_FC_DIR,
-        "IFS an":  IFS_AN_DIR,
-        "AIFS fc": AIFS_FC_DIR,
-    }
-    results = []
-    for label, directory in dirs.items():
-        if not os.path.isdir(directory):
-            results.append(_status(f"{label} file sweep", "SKIP",
-                                   f"directory not found: {directory}"))
-            continue
-        n_nc, grib_files, corrupt_files = _scan_dir_parallel(directory)
-        n_grib, n_corrupt = len(grib_files), len(corrupt_files)
-
-        if n_grib == 0 and n_corrupt == 0:
-            results.append(_status(f"{label} file sweep", "OK",
-                                   f"{n_nc:,} .nc files — all valid NetCDF"))
-            continue
-
-        parts = []
-        if n_grib:
-            pct = 100 * n_grib / n_nc
-            parts.append(f"{n_grib:,} GRIB ({pct:.1f}%)")
-        if n_corrupt:
-            pct = 100 * n_corrupt / n_nc
-            parts.append(f"{n_corrupt:,} corrupt ({pct:.1f}%)")
-        detail = f"{n_nc:,} files checked | bad: {', '.join(parts)}"
-
-        if fix and grib_files:
-            n_fixed, n_failed = 0, 0
-            for path in sorted(grib_files):
-                tmp = path + ".converting"
-                r = subprocess.run(["grib_to_netcdf", "-o", tmp, path],
-                                   capture_output=True)
-                if r.returncode == 0 and os.path.exists(tmp):
-                    os.replace(tmp, path)
-                    n_fixed += 1
-                else:
-                    n_failed += 1
-                    if os.path.exists(tmp):
-                        os.remove(tmp)
-            detail += f" | GRIB fixed {n_fixed:,}, failed {n_failed:,}"
-
-        if corrupt_files and remove_corrupt:
-            for path in corrupt_files:
-                os.remove(path)
-            detail += f" | corrupt removed {n_corrupt:,}"
-            n_corrupt = 0  # cleared
-
-        if n_corrupt or (n_grib and not fix):
-            hints = []
-            if n_grib and not fix:
-                hints.append("GRIB: re-run with --fix-grib")
-            if n_corrupt:
-                hints.append("corrupt: re-run with --remove-corrupt")
-            detail += " — " + "; ".join(hints)
-        status = "PARTIAL" if (n_corrupt or (n_grib and not fix)) else "OK"
-        results.append(_status(f"{label} file sweep", status, detail))
-    return results
-
-
-# ---------------------------------------------------------------------------
-# NetCDF content check (xarray open + variable/grid sanity)
-# ---------------------------------------------------------------------------
-def _check_nc_content(path, expected_var):
-    """
-    Try to open a NetCDF with xarray and confirm expected_var is present and
-    has lat/lon (or latitude/longitude) dimensions. Returns (ok, reason).
-    """
-    try:
-        import xarray as xr
-    except ImportError:
-        return None, "xarray not available"
-    try:
-        with xr.open_dataset(path) as ds:
-            vars_present = set(ds.data_vars) | set(ds.coords)
-            if expected_var not in vars_present:
-                return False, f"variable '{expected_var}' not found (have: {sorted(vars_present)})"
-            dims = set(ds.dims)
-            spatial = dims & {"lat", "lon", "latitude", "longitude", "x", "y"}
-            if len(spatial) < 2:
-                return False, f"fewer than 2 spatial dims (dims: {sorted(dims)})"
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    return True, ""
-
-
-def _checkpoint_paths_for_bad_files(bad_paths):
-    """
-    Given a list of bad .nc source file paths, return the set of monthly
-    checkpoint parquet paths that were built (at least partly) from them.
-
-    File name patterns:
-        ifs_fc_2t_{HHMM}_{lead}_{YYYYMMDD}.nc
-        aifs_fc_2t_{HHMM}_{lead}_{YYYYMMDD}.nc
-
-    Chunk key is (lead_time, valid_time.year, valid_time.month) where
-    valid_time = init_time + lead_time hours — matching _group_fc_by_lead_month.
-    """
-    _FC_PAT = re.compile(
-        r"(?P<tag>ifs|aifs)_fc_2t_(?P<hhmm>\d{4})_(?P<lead>\d+)_(?P<date>\d{8})\.nc$"
-    )
-    affected = set()
-    for path in bad_paths:
-        m = _FC_PAT.search(os.path.basename(path))
-        if not m:
-            continue
-        tag   = m.group("tag")
-        hh    = int(m.group("hhmm")[:2])
-        lead  = int(m.group("lead"))
-        init  = datetime.strptime(m.group("date"), "%Y%m%d").replace(hour=hh)
-        vt    = init + timedelta(hours=lead)
-        subdir = f"{tag}_fc_monthly"
-        stem   = f"{tag}_fc_2t_county"
-        fname  = f"{stem}_{vt.year}_{vt.month:02d}_lead{lead:03d}.parquet"
-        affected.add(os.path.join(AGGREGATED_DIR, subdir, fname))
-    return affected
-
-
-def check_nc_content(remove_bad=False, max_failures_shown=20):
-    """
-    Open every .nc file in each download directory with xarray and verify the
-    expected variable ('t2m') and spatial dimensions are present. Uses
-    _SWEEP_WORKERS threads in parallel (same as the magic-byte sweep).
-    Reports total failure count and up to max_failures_shown example paths.
-    If remove_bad=True, deletes all failing files so they can be re-downloaded.
-    """
-    dirs = {
-        "IFS fc":  (IFS_FC_DIR,  "t2m"),
-        "IFS an":  (IFS_AN_DIR,  "t2m"),
-        "AIFS fc": (AIFS_FC_DIR, "t2m"),
-    }
-    results = []
-    for label, (directory, expected_var) in dirs.items():
-        if not os.path.isdir(directory):
-            results.append(_status(f"{label} content check", "SKIP",
-                                   f"directory not found: {directory}"))
-            continue
-        nc_files = glob.glob(os.path.join(directory, "**", "*.nc"), recursive=True)
-        if not nc_files:
-            results.append(_status(f"{label} content check", "SKIP", "no .nc files found"))
-            continue
-
-        try:
-            from tqdm import tqdm
-            bar = tqdm(total=len(nc_files),
-                       desc=f"  content {os.path.basename(directory)}",
-                       unit="file", leave=False)
-        except ImportError:
-            bar = None
-
-        failures = []  # list of (path, reason)
-        with ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
-            futures = {pool.submit(_check_nc_content, p, expected_var): p for p in nc_files}
-            for fut in as_completed(futures):
-                ok, reason = fut.result()
-                if ok is False:
-                    failures.append((futures[fut], reason))
-                if bar:
-                    bar.update(1)
-        if bar:
-            bar.close()
-
-        n_total, n_fail = len(nc_files), len(failures)
-
-        if remove_bad and failures:
-            bad_paths = [p for p, _ in failures]
-            for path in bad_paths:
-                try:
-                    os.remove(path)
-                except OSError as exc:
-                    print(f"    WARNING: could not delete {path}: {exc}")
-            # Invalidate monthly checkpoint parquets built from these files
-            # so aggregate_fc_an_2t.py re-processes the affected chunks.
-            checkpoints = _checkpoint_paths_for_bad_files(bad_paths)
-            n_ckpt_removed = 0
-            for ckpt in sorted(checkpoints):
-                if os.path.exists(ckpt):
-                    try:
-                        os.remove(ckpt)
-                        n_ckpt_removed += 1
-                    except OSError as exc:
-                        print(f"    WARNING: could not delete checkpoint {ckpt}: {exc}")
-            if checkpoints:
-                print(f"    Invalidated {n_ckpt_removed}/{len(checkpoints)} "
-                      f"monthly checkpoint parquet(s) — re-run aggregate_fc_an_2t.py")
-
-        if n_fail == 0:
-            results.append(_status(
-                f"{label} content check ({n_total:,} files)", "OK",
-                f"variable '{expected_var}' present with spatial dims in all files",
-            ))
-        else:
-            shown = failures[:max_failures_shown]
-            detail = f"{n_fail:,}/{n_total:,} files failed"
-            if remove_bad:
-                detail += f" — {n_fail:,} deleted"
-            if n_fail > max_failures_shown:
-                detail += f" (showing first {max_failures_shown})"
-            detail += ": " + "; ".join(
-                f"{os.path.basename(p)}: {r}" for p, r in shown
-            )
-            status = "OK" if remove_bad else "PARTIAL"
-            results.append(_status(f"{label} content check ({n_total:,} files)", status, detail))
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Download directory check
-# ---------------------------------------------------------------------------
 def _iter_year_months(start_str, end_str):
     """Yield (year, month, first_day, last_day) for every month in [start, end]."""
-    from datetime import date
     start = datetime.strptime(start_str, "%Y-%m-%d").date()
     end   = datetime.strptime(end_str,   "%Y-%m-%d").date()
     yr, mo = start.year, start.month
@@ -646,118 +116,494 @@ def _count_nc_in_dir(directory):
         return 0
 
 
-def check_downloads():
-    """Check IFS/AIFS download directories against the config-defined expected manifest.
-
-    For fc: one file per (init_hour, lead, day); directories are
-        {FC_DIR}/{init_hour}/{lead}/{year}/{month:02d}/
-    For an: one file per day; directories are
-        {AN_DIR}/{year}/{month:02d}/
-
-    Reports per-stream counts (complete/incomplete/missing dirs) and lists up
-    to 20 specific incomplete directories so missing source data is actionable.
+def _content_ok(path, expected_var):
     """
-    results = []
+    Lazy xarray open to check that expected_var is present and has ≥2 spatial dims.
+    Catches GRIB, corrupt, wrong variable, and truncated files.
+    Returns (ok: bool, reason: str).
+    """
+    try:
+        import xarray as xr
+    except ImportError:
+        return True, ""  # can't check; skip
+    try:
+        with xr.open_dataset(path, engine="netcdf4") as ds:
+            vars_present = set(ds.data_vars) | set(ds.coords)
+            if expected_var not in vars_present:
+                shown = sorted(vars_present)[:5]
+                return False, f"var '{expected_var}' missing (have: {shown})"
+            dims = set(ds.dims)
+            spatial = dims & {"lat", "lon", "latitude", "longitude", "x", "y"}
+            if len(spatial) < 2:
+                return False, f"<2 spatial dims ({sorted(dims)})"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, ""
 
-    # -- fc streams ---------------------------------------------------------
-    for label, fc_dir, start_str, end_str in [
-        ("IFS fc",  IFS_FC_DIR,  IFS_START,  IFS_END),
-        ("AIFS fc", AIFS_FC_DIR, AIFS_START, AIFS_END),
-    ]:
-        if not os.path.isdir(fc_dir):
-            results.append(_status(f"{label} downloads", "MISSING",
-                                   f"directory not found: {fc_dir}"))
-            continue
 
-        n_complete = n_incomplete = n_missing = 0
-        examples = []  # (dir_path, actual, expected)
+# ---------------------------------------------------------------------------
+# Phase 1: Source NC files
+# ---------------------------------------------------------------------------
+# SourceStatus shape:
+#   dict[stream_tag, dict[dir_key, {dir_exists, actual, expected, bad: [paths]}]]
+#
+# stream tags:  'ifs_fc', 'ifs_an', 'aifs_fc', 'era5'
+# dir keys:
+#   ifs_fc / aifs_fc : (init_hour, lead, yr, mo)
+#   ifs_an / era5    : (yr, mo)
 
-        for init_hour in INIT_HOURS:
-            for lead in LEAD_TIMES:
-                for yr, mo, first, last in _iter_year_months(start_str, end_str):
-                    expected = (last - first).days + 1
-                    d = os.path.join(fc_dir, init_hour, str(lead),
-                                     str(yr), f"{mo:02d}")
-                    actual = _count_nc_in_dir(d)
-                    if actual == 0 and not os.path.isdir(d):
-                        n_missing += 1
-                        if len(examples) < 20:
-                            examples.append((d, 0, expected))
-                    elif actual < expected:
-                        n_incomplete += 1
-                        if len(examples) < 20:
-                            examples.append((d, actual, expected))
-                    else:
-                        n_complete += 1
 
-        n_dirs = n_complete + n_incomplete + n_missing
-        if n_incomplete == 0 and n_missing == 0:
-            results.append(_status(
-                f"{label} downloads", "OK",
-                f"all {n_dirs:,} directories complete — {fc_dir}",
-            ))
-        else:
-            detail_lines = [
-                f"{n_complete:,}/{n_dirs:,} directories complete "
-                f"({n_incomplete} incomplete, {n_missing} missing) — {fc_dir}",
-            ]
-            for d, act, exp in examples:
-                rel = os.path.relpath(d, fc_dir)
-                detail_lines.append(f"  {rel}: {act}/{exp} files")
-            if (n_incomplete + n_missing) > len(examples):
-                detail_lines.append(
-                    f"  … and {(n_incomplete + n_missing) - len(examples)} more"
-                )
-            results.append(_status(
-                f"{label} downloads", "PARTIAL", "\n             ".join(detail_lines),
-            ))
+def _check_leaf_dir(directory, expected, expected_var):
+    """Check one leaf directory; run content check on every present .nc file."""
+    if not os.path.isdir(directory):
+        return {"dir_exists": False, "actual": 0, "expected": expected, "bad": []}
+    nc_files = [
+        os.path.join(directory, f)
+        for f in os.listdir(directory)
+        if f.endswith(".nc")
+    ]
+    actual = len(nc_files)
+    bad = []
+    for path in nc_files:
+        ok, _ = _content_ok(path, expected_var)
+        if not ok:
+            bad.append(path)
+    return {"dir_exists": True, "actual": actual, "expected": expected, "bad": bad}
 
-    # -- IFS an -------------------------------------------------------------
-    if not os.path.isdir(IFS_AN_DIR):
-        results.append(_status("IFS an downloads", "MISSING",
-                               f"directory not found: {IFS_AN_DIR}"))
-    else:
-        n_complete = n_incomplete = n_missing = 0
-        examples = []
 
-        for yr, mo, first, last in _iter_year_months(IFS_START, IFS_END):
-            expected = (last - first).days + 1
-            d = os.path.join(IFS_AN_DIR, str(yr), f"{mo:02d}")
-            actual = _count_nc_in_dir(d)
-            if actual == 0 and not os.path.isdir(d):
+def check_source_files():
+    """
+    Phase 1: Check all expected source NC leaf directories using a thread pool.
+    Returns SourceStatus dict.
+    """
+    source_status = {"ifs_fc": {}, "ifs_an": {}, "aifs_fc": {}, "era5": {}}
+    tasks = []  # (stream, key, directory, expected, expected_var)
+
+    # IFS FC: {IFS_FC_DIR}/{init_hour}/{lead}/{year}/{month:02d}/
+    for init_hour in INIT_HOURS:
+        for lead in LEAD_TIMES:
+            for yr, mo, first, last in _iter_year_months(IFS_START, IFS_END):
+                d = os.path.join(IFS_FC_DIR, init_hour, str(lead), str(yr), f"{mo:02d}")
+                exp = (last - first).days + 1
+                tasks.append(("ifs_fc", (init_hour, lead, yr, mo), d, exp, "t2m"))
+
+    # AIFS FC: {AIFS_FC_DIR}/{init_hour}/{lead}/{year}/{month:02d}/
+    for init_hour in INIT_HOURS:
+        for lead in LEAD_TIMES:
+            for yr, mo, first, last in _iter_year_months(AIFS_START, AIFS_END):
+                d = os.path.join(AIFS_FC_DIR, init_hour, str(lead), str(yr), f"{mo:02d}")
+                exp = (last - first).days + 1
+                tasks.append(("aifs_fc", (init_hour, lead, yr, mo), d, exp, "t2m"))
+
+    # IFS AN: {IFS_AN_DIR}/{year}/{month:02d}/
+    for yr, mo, first, last in _iter_year_months(IFS_START, IFS_END):
+        d = os.path.join(IFS_AN_DIR, str(yr), f"{mo:02d}")
+        exp = (last - first).days + 1
+        tasks.append(("ifs_an", (yr, mo), d, exp, "t2m"))
+
+    # ERA5: {ERA5_DIR}/{YYYYMM}/
+    start_yr = int(ERA5_CLIM_START[:4])
+    end_yr   = int(ERA5_CLIM_END[:4])
+    for yr in range(start_yr, end_yr + 1):
+        for mo in range(1, 13):
+            d = os.path.join(ERA5_DIR, f"{yr}{mo:02d}")
+            exp = calendar.monthrange(yr, mo)[1]
+            tasks.append(("era5", (yr, mo), d, exp, "t2m"))
+
+    try:
+        from tqdm import tqdm
+        bar = tqdm(total=len(tasks), desc="Phase 1: source dirs", unit="dir", leave=False)
+    except ImportError:
+        bar = None
+
+    def _run(task):
+        stream, key, directory, expected, expected_var = task
+        return stream, key, _check_leaf_dir(directory, expected, expected_var)
+
+    with ThreadPoolExecutor(max_workers=_SWEEP_WORKERS) as pool:
+        futures = {pool.submit(_run, t): t for t in tasks}
+        for fut in as_completed(futures):
+            stream, key, result = fut.result()
+            source_status[stream][key] = result
+            if bar:
+                bar.update(1)
+    if bar:
+        bar.close()
+
+    return source_status
+
+
+def _fmt_key(key):
+    """Format a dir-key tuple as a human-readable string."""
+    return "/".join(str(k) for k in key)
+
+
+def _print_source_phase(source_status):
+    """
+    Print Phase 1 report.
+    Returns list of all corrupt NC file paths (for cleanup).
+    """
+    print("=== Phase 1: Source NC Files ===")
+    all_corrupt = []
+
+    streams = [
+        ("ifs_fc",  "IFS FC "),
+        ("ifs_an",  "IFS AN "),
+        ("aifs_fc", "AIFS FC"),
+        ("era5",    "ERA5   "),
+    ]
+    for tag, label in streams:
+        ss = source_status.get(tag, {})
+        n_ok = n_incomplete = n_missing = 0
+        corrupt_files = []
+        detail_lines = []
+
+        for key, info in sorted(ss.items()):
+            actual   = info["actual"]
+            expected = info["expected"]
+            bad      = info["bad"]
+
+            if not info["dir_exists"]:
                 n_missing += 1
-                if len(examples) < 20:
-                    examples.append((d, 0, expected))
+                if len(detail_lines) < _MAX_DETAIL_LINES:
+                    detail_lines.append(f"    MISSING     {_fmt_key(key)}")
+            elif bad:
+                corrupt_files.extend(bad)
+                all_corrupt.extend(bad)
+                if len(detail_lines) < _MAX_DETAIL_LINES:
+                    for p in bad:
+                        detail_lines.append(f"    CORRUPT     {_fmt_key(key)}/{os.path.basename(p)}")
+                if actual < expected:
+                    n_incomplete += 1
+                else:
+                    n_ok += 1
             elif actual < expected:
                 n_incomplete += 1
-                if len(examples) < 20:
-                    examples.append((d, actual, expected))
+                if len(detail_lines) < _MAX_DETAIL_LINES:
+                    detail_lines.append(
+                        f"    INCOMPLETE  {_fmt_key(key)}: {actual}/{expected} files"
+                    )
             else:
-                n_complete += 1
+                n_ok += 1
 
-        n_dirs = n_complete + n_incomplete + n_missing
-        if n_incomplete == 0 and n_missing == 0:
-            results.append(_status(
-                "IFS an downloads", "OK",
-                f"all {n_dirs:,} directories complete — {IFS_AN_DIR}",
-            ))
+        print(
+            f"  {label} — {n_ok:,} dirs OK, {n_incomplete} incomplete, "
+            f"{n_missing} missing, {len(corrupt_files)} corrupt files"
+        )
+        for line in detail_lines:
+            print(line)
+        extra = len(detail_lines) - _MAX_DETAIL_LINES
+        if extra > 0:
+            print(f"    … and {extra} more")
+
+    return all_corrupt
+
+
+# ---------------------------------------------------------------------------
+# Phase 2a: ERA5 aggregation
+# ---------------------------------------------------------------------------
+
+def check_era5_aggregation(source_status):
+    """
+    Phase 2a: Validate ERA5 monthly parquets and climatology.
+    Returns (flagged_parquets, remove_clim) where flagged_parquets is a list of
+    (path, reason) and remove_clim is bool.
+    """
+    monthly_dir = os.path.join(AGGREGATED_DIR, "era5_monthly")
+    start_yr = int(ERA5_CLIM_START[:4])
+    end_yr   = int(ERA5_CLIM_END[:4])
+
+    flagged = []  # (path, reason)
+    n_ok = n_missing = n_stale = n_source_incomplete = 0
+    detail_lines = []
+
+    for yr in range(start_yr, end_yr + 1):
+        for mo in range(1, 13):
+            path = os.path.join(monthly_dir, f"era5_2t_county_{yr}_{mo:02d}.parquet")
+            src_info = source_status.get("era5", {}).get((yr, mo), {})
+            source_count = src_info.get("actual", None)
+
+            if not os.path.exists(path) or _parquet_row_count(path) is None:
+                n_missing += 1
+                flagged.append((path, "MISSING"))
+                if len(detail_lines) < _MAX_DETAIL_LINES:
+                    detail_lines.append(f"    MISSING   {yr}/{mo:02d}")
+                continue
+
+            if source_count is not None:
+                unique_times = _parquet_unique_count(path, "time")
+                expected_days = calendar.monthrange(yr, mo)[1]
+                if unique_times != source_count:
+                    n_stale += 1
+                    flagged.append((path, f"STALE ({unique_times} times != {source_count} source files)"))
+                    if len(detail_lines) < _MAX_DETAIL_LINES:
+                        detail_lines.append(
+                            f"    STALE     {yr}/{mo:02d}: {unique_times} times != {source_count} source files"
+                        )
+                    continue
+                if source_count < expected_days:
+                    n_source_incomplete += 1
+                    # parquet matches source but source is incomplete — note only
+                    if len(detail_lines) < _MAX_DETAIL_LINES:
+                        detail_lines.append(
+                            f"    SRC_INCOMPLETE  {yr}/{mo:02d}: only {source_count}/{expected_days} source files"
+                        )
+
+            n_ok += 1
+
+    print("=== Phase 2a: ERA5 Aggregation ===")
+    total = (end_yr - start_yr + 1) * 12
+    print(
+        f"  Monthly parquets: {n_ok}/{total} OK"
+        + (f", {n_missing} missing" if n_missing else "")
+        + (f", {n_stale} stale" if n_stale else "")
+        + (f", {n_source_incomplete} source-incomplete" if n_source_incomplete else "")
+    )
+    for line in detail_lines:
+        print(line)
+    extra = len(detail_lines) - _MAX_DETAIL_LINES
+    if extra > 0:
+        print(f"    … and {extra} more")
+
+    # Climatology
+    remove_clim = False
+    if not os.path.exists(ERA5_CLIM_PATH):
+        print("  Climatology: MISSING")
+    else:
+        names = _parquet_schema_names(ERA5_CLIM_PATH)
+        required = {"t2m_clim", "geo_id", "day_of_year"}
+        if names is None or not required.issubset(names):
+            missing_cols = required - (names or set())
+            print(f"  Climatology: PARTIAL — missing columns: {missing_cols}")
+            remove_clim = bool(flagged)  # stale monthly → stale clim
         else:
-            detail_lines = [
-                f"{n_complete:,}/{n_dirs:,} directories complete "
-                f"({n_incomplete} incomplete, {n_missing} missing) — {IFS_AN_DIR}",
-            ]
-            for d, act, exp in examples:
-                rel = os.path.relpath(d, IFS_AN_DIR)
-                detail_lines.append(f"  {rel}: {act}/{exp} files")
-            if (n_incomplete + n_missing) > len(examples):
-                detail_lines.append(
-                    f"  … and {(n_incomplete + n_missing) - len(examples)} more"
-                )
-            results.append(_status(
-                "IFS an downloads", "PARTIAL", "\n             ".join(detail_lines),
-            ))
+            rows = _parquet_row_count(ERA5_CLIM_PATH)
+            try:
+                tbl = pq.read_table(ERA5_CLIM_PATH, columns=["day_of_year"])
+                doys = tbl["day_of_year"].to_pandas()
+                mn, mx, n_doys = int(doys.min()), int(doys.max()), doys.nunique()
+            except Exception:
+                mn, mx, n_doys = None, None, None
+            if mn == 1 and mx == 365 and n_doys == 365:
+                print(f"  Climatology: OK ({rows:,} rows, DOY 1–365)")
+            else:
+                print(f"  Climatology: PARTIAL ({rows:,} rows, DOY {mn}–{mx}, {n_doys} unique DOYs)")
+                remove_clim = bool(flagged)
 
-    return results
+    return flagged, remove_clim
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b: IFS/AIFS aggregation
+# ---------------------------------------------------------------------------
+
+_FC_CHUNK_PAT = re.compile(
+    r"(?P<tag>ifs_fc|aifs_fc)_2t_county_(?P<yr>\d{4})_(?P<mo>\d{2})_lead(?P<lead>\d+)\.parquet$"
+)
+_AN_CHUNK_PAT = re.compile(
+    r"ifs_an_2t_county_(?P<yr>\d{4})_(?P<mo>\d{2})\.parquet$"
+)
+
+
+def check_fc_an_aggregation():
+    """
+    Phase 2b: Check checkpoint completeness for all IFS/AIFS parquets.
+    Returns list of (path, reason) tuples.
+    """
+    chunks = [
+        ("ifs_fc_monthly",  _FC_CHUNK_PAT, "valid_time"),
+        ("aifs_fc_monthly", _FC_CHUNK_PAT, "valid_time"),
+        ("ifs_an_monthly",  _AN_CHUNK_PAT, "time"),
+    ]
+
+    flagged = []
+    summary = {}  # subdir → (n_ok, n_incomplete, n_legacy)
+
+    print("=== Phase 2b: IFS/AIFS Aggregation ===")
+    for subdir, pat, time_col in chunks:
+        monthly_dir = os.path.join(AGGREGATED_DIR, subdir)
+        if not os.path.isdir(monthly_dir):
+            print(f"  {subdir}: MISSING directory")
+            continue
+
+        paths = sorted(glob.glob(os.path.join(monthly_dir, "*.parquet")))
+        n_ok = n_incomplete = n_legacy = 0
+        detail_lines = []
+
+        for path in paths:
+            m = pat.search(os.path.basename(path))
+            if not m:
+                continue
+
+            n_source = _read_sidecar_n_source(path)
+            if n_source is None:
+                n_legacy += 1
+                flagged.append((path, "LEGACY (no sidecar)"))
+                if len(detail_lines) < _MAX_DETAIL_LINES:
+                    detail_lines.append(f"    LEGACY      {os.path.basename(path)}")
+                continue
+
+            unique_times = _parquet_unique_count(path, time_col)
+            if unique_times < n_source:
+                n_incomplete += 1
+                flagged.append((path, f"INCOMPLETE ({unique_times}/{n_source})"))
+                if len(detail_lines) < _MAX_DETAIL_LINES:
+                    detail_lines.append(
+                        f"    INCOMPLETE  {os.path.basename(path)} ({unique_times}/{n_source})"
+                    )
+            else:
+                n_ok += 1
+
+        total = n_ok + n_incomplete + n_legacy
+        status = "OK" if n_incomplete == 0 and n_legacy == 0 else "PARTIAL"
+        print(
+            f"  {subdir}: {total} parquets — {n_ok} OK"
+            + (f", {n_incomplete} incomplete" if n_incomplete else "")
+            + (f", {n_legacy} legacy (no sidecar)" if n_legacy else "")
+        )
+        for line in detail_lines:
+            print(line)
+        extra = len(detail_lines) - _MAX_DETAIL_LINES
+        if extra > 0:
+            print(f"    … and {extra} more")
+
+    return flagged
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Derived outputs (informational only)
+# ---------------------------------------------------------------------------
+
+_DERIVED_PARQUETS = [
+    ("IFS bias",            "ifs_fc_bias_2t_county.parquet"),
+    ("IFS bias+anom",       "ifs_fc_bias_anom_2t_county.parquet"),
+    ("AIFS bias",           "aifs_fc_bias_2t_county.parquet"),
+    ("AIFS bias+anom",      "aifs_fc_bias_anom_2t_county.parquet"),
+    ("AIFS vs IFS",         "aifs_vs_ifs_fc_bias_comparison_2t_county.parquet"),
+]
+
+
+def check_derived_outputs():
+    """
+    Phase 3: Check presence of derived output parquets (informational only).
+    Returns list of missing filenames.
+    """
+    print("=== Phase 3: Derived Outputs ===")
+    missing_names = []
+    for label, fname in _DERIVED_PARQUETS:
+        path = os.path.join(AGGREGATED_DIR, fname)
+        if not os.path.exists(path):
+            missing_names.append(fname)
+            print(f"  MISSING  {label} ({fname})")
+        else:
+            rows = _parquet_row_count(path)
+            if rows is None:
+                missing_names.append(fname)
+                print(f"  CORRUPT  {label} ({fname})")
+            else:
+                print(f"  OK       {label} ({rows:,} rows)")
+    if len(missing_names) == len(_DERIVED_PARQUETS):
+        print("  (none computed yet — run compute_derived_2t.py to generate)")
+    return missing_names
+
+
+# ---------------------------------------------------------------------------
+# Additional standalone checks (always run, lightweight)
+# ---------------------------------------------------------------------------
+
+def check_koppen():
+    out_path = os.path.join(AGGREGATED_DIR, "koppen_geiger_county.parquet")
+    tif_ok = os.path.exists(KOPPEN_PATH)
+    tif_status = "present" if tif_ok else "MISSING"
+    if not os.path.exists(out_path):
+        print(f"  Koppen-Geiger: MISSING output | GeoTIFF {tif_status}: {KOPPEN_PATH}")
+        return False
+    rows = _parquet_row_count(out_path)
+    if rows is None:
+        print(f"  Koppen-Geiger: CORRUPT output — {out_path}")
+        return False
+    print(f"  Koppen-Geiger: OK ({rows:,} rows) | GeoTIFF {tif_status}")
+    return True
+
+
+def check_acs():
+    path = os.path.join(
+        ACS_DIR, f"acs_5yr_{ACS_YEAR}", f"acs_5yr_{ACS_YEAR}_{ACS_LEVEL}.parquet"
+    )
+    if not os.path.exists(path):
+        print(f"  ACS data: MISSING — {path}")
+        return False
+    rows = _parquet_row_count(path)
+    if rows is None:
+        print(f"  ACS data: CORRUPT — {path}")
+        return False
+    print(f"  ACS data: OK ({rows:,} rows)")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+
+def cleanup(corrupt_nc, flagged_era5, flagged_fc_an, remove_clim):
+    """
+    Remove exactly the flagged artifacts:
+    - corrupt_nc:     list of .nc paths (fail content check)
+    - flagged_era5:   list of (parquet_path, reason) ERA5 monthly parquets
+    - flagged_fc_an:  list of (parquet_path, reason) FC/AN checkpoint parquets
+    - remove_clim:    bool — delete ERA5 climatology
+
+    Does NOT delete missing source files (download handles that) or derived outputs.
+    """
+    n_nc = n_parquet = 0
+
+    for path in corrupt_nc:
+        try:
+            os.remove(path)
+            print(f"  REMOVED  {path}")
+            n_nc += 1
+        except OSError as exc:
+            print(f"  WARNING: could not delete {path}: {exc}")
+
+    for path, reason in flagged_era5:
+        if not os.path.exists(path):
+            continue
+        try:
+            os.remove(path)
+            print(f"  REMOVED  {path}  [{reason}]")
+            n_parquet += 1
+        except OSError as exc:
+            print(f"  WARNING: could not delete {path}: {exc}")
+
+    for path, reason in flagged_fc_an:
+        if not os.path.exists(path):
+            continue
+        try:
+            os.remove(path)
+            n_parquet += 1
+        except OSError as exc:
+            print(f"  WARNING: could not delete {path}: {exc}")
+            continue
+        print(f"  REMOVED  {path}  [{reason}]")
+        # Remove sidecars
+        base, _ = os.path.splitext(path)
+        for ext in (".checkpoint.json", ".meta.json"):
+            sc = base + ext
+            if os.path.exists(sc):
+                try:
+                    os.remove(sc)
+                    print(f"  REMOVED  {sc}")
+                except OSError as exc:
+                    print(f"  WARNING: could not delete {sc}: {exc}")
+
+    if remove_clim and os.path.exists(ERA5_CLIM_PATH):
+        try:
+            os.remove(ERA5_CLIM_PATH)
+            print(f"  REMOVED  {ERA5_CLIM_PATH}  [stale ERA5 monthly parquets removed]")
+        except OSError as exc:
+            print(f"  WARNING: could not delete climatology: {exc}")
+
+    print(f"\nCleanup complete: {n_nc} corrupt NC files, {n_parquet} parquets removed.")
 
 
 # ---------------------------------------------------------------------------
@@ -765,113 +611,80 @@ def check_downloads():
 # ---------------------------------------------------------------------------
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Validate nwp-census-eval pipeline outputs.")
+    parser = argparse.ArgumentParser(
+        description="Validate nwp-census-eval pipeline outputs (always runs all phases)."
+    )
     parser.add_argument(
-        "--check-downloads",
+        "--cleanup",
         action="store_true",
         help=(
-            "Check IFS/AIFS download directories against the config-defined expected manifest "
-            "(init_hours × lead_times × days). Slow on large trees; skipped by default."
+            "Remove flagged artifacts: corrupt NC files, incomplete/legacy checkpoint "
+            "parquets (+ their sidecars), and ERA5 climatology if stale monthly parquets "
+            "were removed. Does NOT delete missing source files or derived outputs."
         ),
     )
-    parser.add_argument(
-        "--nc-sweep",
-        action="store_true",
-        help="Scan .nc files for GRIB/corrupt content (skipped by default; slow on 100k+ files).",
-    )
-    parser.add_argument(
-        "--fix-grib",
-        action="store_true",
-        help="Convert GRIB-format .nc files in place (implies --nc-sweep).",
-    )
-    parser.add_argument(
-        "--remove-corrupt",
-        action="store_true",
-        help="Delete corrupt .nc files so they can be re-downloaded (implies --nc-sweep).",
-    )
-    parser.add_argument(
-        "--content-check",
-        action="store_true",
-        help="Open every .nc file with xarray and verify variable/grid content (parallel, slow on large trees).",
-    )
-    parser.add_argument(
-        "--remove-bad-content",
-        action="store_true",
-        help="Delete files that fail the content check so they can be re-downloaded (implies --content-check).",
-    )
     args = parser.parse_args(argv)
-    run_nc_sweep = args.nc_sweep or args.fix_grib or args.remove_corrupt
-    run_content_check = args.content_check or args.remove_bad_content
 
-    print("\n=== nwp-census-eval pipeline status ===\n")
-    any_missing = False
+    print("\n=== nwp-census-eval pipeline validation ===\n")
 
-    print("-- ERA5 monthly parquets --")
-    msg, status = check_era5_monthly()
-    print(msg)
-    if status == "MISSING":
-        any_missing = True
+    # Phase 1
+    source_status = check_source_files()
+    print()
+    corrupt_nc = _print_source_phase(source_status)
+    print()
 
-    print("\n-- ERA5 climatology --")
-    msg, status = check_era5_climatology()
-    print(msg)
-    if status == "MISSING":
-        any_missing = True
+    # Phase 2a
+    flagged_era5, remove_clim = check_era5_aggregation(source_status)
+    print()
 
-    print("\n-- Aggregation outputs --")
-    results, _missing = check_aggregation_outputs()
-    for msg, _ in results:
-        print(msg)
-    if _missing:
-        any_missing = True
+    # Phase 2b
+    flagged_fc_an = check_fc_an_aggregation()
+    print()
 
-    print("\n-- Checkpoint completeness --")
-    msg, status = check_checkpoint_completeness()
-    print(msg)
-    if status == "PARTIAL":
-        any_missing = True
+    # Phase 3
+    missing_derived = check_derived_outputs()
+    print()
 
-    print("\n-- Koppen-Geiger --")
-    msg, status = check_koppen()
-    print(msg)
-    if status == "MISSING":
-        any_missing = True
+    # Ancillary checks
+    print("=== Ancillary Outputs ===")
+    check_koppen()
+    check_acs()
+    print()
 
-    print("\n-- ACS data --")
-    msg, status = check_acs()
-    print(msg)
-    if status == "MISSING":
-        any_missing = True
+    # Summary
+    print("=== Summary ===")
+    n_corrupt_nc  = len(corrupt_nc)
+    n_era5_parq   = len(flagged_era5)
+    n_fc_an_parq  = len(flagged_fc_an)
+    n_total_parq  = n_era5_parq + n_fc_an_parq
+    n_missing_der = len(missing_derived)
 
-    print("\n-- .nc file format sweep (magic bytes) --")
-    if run_nc_sweep:
-        for msg, _ in check_grib_nc_files(fix=args.fix_grib, remove_corrupt=args.remove_corrupt):
-            print(msg)
+    if n_corrupt_nc == 0 and n_total_parq == 0:
+        print("  No issues found — pipeline artifacts look complete.")
     else:
-        print(_status(".nc file sweep", "SKIP", "pass --nc-sweep to enable")[0])
+        if n_corrupt_nc:
+            print(f"  {n_corrupt_nc} corrupt NC file(s) flagged")
+        if n_era5_parq:
+            print(f"  {n_era5_parq} ERA5 monthly parquet(s) flagged (missing/stale)")
+        if n_fc_an_parq:
+            print(f"  {n_fc_an_parq} FC/AN checkpoint parquet(s) flagged (incomplete/legacy)")
+        if remove_clim:
+            print("  ERA5 climatology flagged (stale)")
 
-    print("\n-- .nc file content check (xarray variable/grid, all files) --")
-    if run_content_check:
-        for msg, _ in check_nc_content(remove_bad=args.remove_bad_content):
-            print(msg)
-    else:
-        print(_status(".nc content check", "SKIP", "pass --content-check to enable")[0])
+    if n_missing_der:
+        print(f"  {n_missing_der} derived output(s) not yet computed (run compute_derived_2t.py)")
 
-    print("\n-- IFS/AIFS downloads --")
-    if args.check_downloads:
-        for msg, status in check_downloads():
-            print(msg)
-            if status == "MISSING":
-                any_missing = True
-    else:
-        print(_status("IFS/AIFS downloads", "SKIP", "pass --check-downloads to enable")[0])
+    if n_corrupt_nc or n_total_parq:
+        if args.cleanup:
+            print()
+            print("=== Cleanup ===")
+            cleanup(corrupt_nc, flagged_era5, flagged_fc_an, remove_clim)
+        else:
+            print()
+            print("  Run with --cleanup to remove flagged artifacts.")
 
-    print("\n" + "=" * 40)
-    if any_missing:
-        print("Status: INCOMPLETE (some outputs missing)")
-        return 1
-    print("Status: ALL OK")
-    return 0
+    any_issue = bool(n_corrupt_nc or n_total_parq or n_missing_der)
+    return 1 if any_issue else 0
 
 
 if __name__ == "__main__":
