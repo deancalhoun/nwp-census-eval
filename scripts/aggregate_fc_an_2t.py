@@ -284,7 +284,12 @@ def _is_chunk_done(tag, group_key):
         return False
 
 
-def _write_chunk_atomic(tag, group_key, df):
+def _chunk_sidecar_path(parquet_path):
+    base, _ = os.path.splitext(parquet_path)
+    return base + ".checkpoint.json"
+
+
+def _write_chunk_atomic(tag, group_key, df, n_source_files):
     if tag in ("ifs_fc", "aifs_fc"):
         lead, yr, mo = group_key
         path = _chunk_path(tag, yr, mo, lead=lead)
@@ -294,6 +299,13 @@ def _write_chunk_atomic(tag, group_key, df):
     tmp = path + ".tmp"
     df.to_parquet(tmp, index=False)
     os.replace(tmp, path)
+    # Sidecar records post-alignment source file count so validate_pipeline.py
+    # can compare against the actual aligned expected rather than theoretical max.
+    sidecar = _chunk_sidecar_path(path)
+    tmp_sc = sidecar + ".tmp"
+    with open(tmp_sc, "w") as f:
+        json.dump({"n_source_files": n_source_files}, f)
+    os.replace(tmp_sc, sidecar)
     logging.info("Checkpoint: %s (%d rows)", os.path.basename(path), len(df))
 
 
@@ -307,22 +319,15 @@ def _count_unique_times(path, tag):
         return 0
 
 
-_TAG_FREQ_PER_DAY = {
-    "ifs_fc":  2,  # 12-hourly init times
-    "aifs_fc": 2,  # 12-hourly init times
-    "ifs_an":  4,  # 6-hourly
-}
-_COMPLETENESS_THRESHOLD = 0.99  # matches validate_pipeline.py
-
-
 def _invalidate_incomplete_chunks(all_chunks):
-    """Delete checkpoint parquets below the completeness threshold.
+    """Delete checkpoint parquets whose unique-time count is less than the
+    post-alignment source file count for that chunk.
 
-    Expected count is the theoretical maximum (freq_per_day × days_in_month),
-    NOT len(files) — so a chunk whose source files were never downloaded is
-    correctly flagged rather than silently accepted as "complete".
+    Uses len(files) — the aligned list — as expected, so alignment-dropped
+    init times don't produce false positives. The download check in
+    validate_pipeline.py handles the separate question of whether all
+    theoretical source files are present on disk.
     """
-    import calendar
     n_checked = n_invalidated = 0
     for tag, group_key, files in all_chunks:
         if tag in ("ifs_fc", "aifs_fc"):
@@ -334,17 +339,18 @@ def _invalidate_incomplete_chunks(all_chunks):
         if not os.path.exists(path):
             continue
         n_checked += 1
-        freq = _TAG_FREQ_PER_DAY[tag]
-        days = calendar.monthrange(yr, mo)[1]
-        expected = freq * days
+        expected = len(files)
         actual = _count_unique_times(path, tag)
-        if actual < _COMPLETENESS_THRESHOLD * expected:
+        if actual < expected:
             logging.info(
-                "Incomplete checkpoint %s (%d/%d theoretical times, %.1f%%) — invalidating",
-                os.path.basename(path), actual, expected, 100.0 * actual / expected,
+                "Incomplete checkpoint %s (%d/%d aligned times) — invalidating",
+                os.path.basename(path), actual, expected,
             )
             try:
                 os.remove(path)
+                sidecar = _chunk_sidecar_path(path)
+                if os.path.exists(sidecar):
+                    os.remove(sidecar)
                 n_invalidated += 1
             except OSError as exc:
                 logging.warning("Could not remove %s: %s", path, exc)
@@ -434,9 +440,11 @@ def _run_all(all_chunks, n_parallel, verify=False):
 
     bar = _tqdm(total=len(pending), desc="Aggregating", unit="chunk") if _tqdm else None
 
+    chunk_n_files = {(tag, group_key): len(files) for tag, group_key, files in pending}
+
     def _handle(tag, group_key, df):
         if df is not None and not df.empty:
-            _write_chunk_atomic(tag, group_key, df)
+            _write_chunk_atomic(tag, group_key, df, chunk_n_files.get((tag, group_key), 0))
         if bar:
             bar.update(1)
 
@@ -607,11 +615,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--verify-checkpoints", action="store_true",
         help=(
-            "Before aggregating, scan all existing checkpoint parquets and delete any that are "
-            "below the completeness threshold (unique-time count < 99%% of freq_per_day × "
-            "days_in_month). Uses the theoretical maximum, not just files currently on disk, "
-            "so months with missing source data are correctly flagged. Re-download missing "
-            "source files, then re-run without --verify-checkpoints to fill the gaps."
+            "Before aggregating, scan all existing checkpoint parquets and delete any whose "
+            "unique-time count is less than the post-alignment source file count for that chunk. "
+            "Incomplete checkpoints will then be re-aggregated in the normal pass. "
+            "To find missing source files, use validate_pipeline.py --check-downloads."
         ),
     )
     args = parser.parse_args()

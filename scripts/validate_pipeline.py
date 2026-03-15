@@ -20,6 +20,7 @@ Usage:
 """
 
 import calendar
+import json
 import os
 import sys
 import argparse
@@ -180,21 +181,31 @@ def _unique_time_count(path, col):
         return 0
 
 
+def _read_sidecar_n_source(parquet_path):
+    """Return n_source_files from the .checkpoint.json sidecar, or None if absent/unreadable."""
+    base, _ = os.path.splitext(parquet_path)
+    sidecar = base + ".checkpoint.json"
+    try:
+        with open(sidecar) as f:
+            return int(json.load(f)["n_source_files"])
+    except Exception:
+        return None
+
+
 def check_checkpoint_completeness():
     """
     Read the time column from every monthly checkpoint parquet and compare
-    unique counts against the theoretical maximum for that month.
+    unique counts against the expected count for that chunk.
 
-    For fc: one valid_time per init time per lead; init times are 12-hourly
-    → 2 × days_in_month expected.
-    For an: 6-hourly → 4 × days_in_month expected.
+    Expected count comes from the per-chunk .checkpoint.json sidecar written
+    at aggregation time, which records the post-alignment source file count.
+    This is the ground truth: alignment may legitimately drop some init times
+    (e.g. valid_time falls outside the AN date window), so the theoretical
+    max (freq × days_in_month) would produce false positives for those chunks.
 
-    Parquets covering partial date ranges (start/end of the configured window)
-    may legitimately fall below the theoretical maximum, so this is surfaced
-    as PARTIAL rather than MISSING, with re-run instructions.
+    For parquets written before sidecar support was added (no sidecar file),
+    the theoretical max is used as a fallback — these are noted separately.
     """
-    _THRESHOLD = 0.99  # flag if actual < threshold × expected
-
     chunks = [
         # (subdir, pattern, time_col, freq_per_day)
         ("ifs_fc_monthly",   _FC_CHUNK_PAT, "valid_time", _FC_INIT_FREQ_PER_DAY),
@@ -202,8 +213,9 @@ def check_checkpoint_completeness():
         ("ifs_an_monthly",   _AN_CHUNK_PAT, "time",       _AN_FREQ_PER_DAY),
     ]
 
-    incomplete = []
+    incomplete = []       # (name, actual, expected, has_sidecar)
     total_checked = 0
+    n_no_sidecar = 0
 
     for subdir, pat, time_col, freq in chunks:
         monthly_dir = os.path.join(AGGREGATED_DIR, subdir)
@@ -214,28 +226,57 @@ def check_checkpoint_completeness():
             if not m:
                 continue
             yr, mo = int(m.group("yr")), int(m.group("mo"))
-            days = calendar.monthrange(yr, mo)[1]
-            expected = freq * days
-            actual = _unique_time_count(path, time_col)
             total_checked += 1
-            if actual < _THRESHOLD * expected:
-                incomplete.append((os.path.basename(path), actual, expected))
+
+            n_source = _read_sidecar_n_source(path)
+            if n_source is not None:
+                expected = n_source
+                has_sidecar = True
+            else:
+                # Fallback: theoretical max
+                expected = freq * calendar.monthrange(yr, mo)[1]
+                has_sidecar = False
+                n_no_sidecar += 1
+
+            actual = _unique_time_count(path, time_col)
+            if actual < expected:
+                incomplete.append((os.path.basename(path), actual, expected, has_sidecar))
 
     if total_checked == 0:
         return _status("Checkpoint completeness", "SKIP", "no monthly parquets found")
+
     if not incomplete:
+        note = (f"; {n_no_sidecar} used theoretical-max fallback (no sidecar)"
+                if n_no_sidecar else "")
         return _status(
             "Checkpoint completeness", "OK",
-            f"all {total_checked} monthly parquets meet the ≥{int(_THRESHOLD*100)}% completeness threshold",
+            f"all {total_checked} monthly parquets complete{note}",
         )
-    detail = (
-        f"{len(incomplete)}/{total_checked} parquet(s) below {int(_THRESHOLD*100)}% complete: "
-        + "; ".join(f"{name} ({act}/{exp})" for name, act, exp in incomplete[:10])
-    )
-    if len(incomplete) > 10:
-        detail += f" … and {len(incomplete) - 10} more"
-    detail += " — re-run aggregate_fc_an_2t.py --verify-checkpoints"
-    return _status("Checkpoint completeness", "PARTIAL", detail)
+
+    # Separate sidecar-backed (reliable) from theoretical-max (may include alignment artifacts)
+    reliable   = [(n, a, e) for n, a, e, s in incomplete if s]
+    fallback   = [(n, a, e) for n, a, e, s in incomplete if not s]
+
+    lines = [f"{len(incomplete)}/{total_checked} parquet(s) below expected:"]
+    if reliable:
+        lines.append(f"  confirmed ({len(reliable)}, sidecar-backed):")
+        for name, act, exp in reliable[:10]:
+            lines.append(f"    {name} ({act}/{exp})")
+        if len(reliable) > 10:
+            lines.append(f"    … and {len(reliable) - 10} more")
+    if fallback:
+        lines.append(
+            f"  possible ({len(fallback)}, no sidecar — may be alignment artifacts):"
+        )
+        for name, act, exp in fallback[:10]:
+            lines.append(f"    {name} ({act}/{exp})")
+        if len(fallback) > 10:
+            lines.append(f"    … and {len(fallback) - 10} more")
+    if reliable:
+        lines.append("  → re-run aggregate_fc_an_2t.py --verify-checkpoints")
+    if fallback:
+        lines.append("  → re-aggregate to write sidecars and confirm")
+    return _status("Checkpoint completeness", "PARTIAL", "\n             ".join(lines))
 
 
 def check_aggregation_outputs():
