@@ -469,56 +469,90 @@ _AN_CHUNK_PAT = re.compile(
 )
 
 
+def _expected_fc_an_parquets():
+    """
+    Return expected parquet filenames (basenames) for each subdir, derived from
+    the config date ranges and lead times.
+    """
+    expected = {"ifs_fc_monthly": set(), "aifs_fc_monthly": set(), "ifs_an_monthly": set()}
+
+    for yr, mo, _, _ in _iter_year_months(IFS_START, IFS_END):
+        for lead in LEAD_TIMES:
+            expected["ifs_fc_monthly"].add(f"ifs_fc_2t_county_{yr}_{mo:02d}_lead{lead:03d}.parquet")
+        expected["ifs_an_monthly"].add(f"ifs_an_2t_county_{yr}_{mo:02d}.parquet")
+
+    for yr, mo, _, _ in _iter_year_months(AIFS_START, AIFS_END):
+        for lead in LEAD_TIMES:
+            expected["aifs_fc_monthly"].add(f"aifs_fc_2t_county_{yr}_{mo:02d}_lead{lead:03d}.parquet")
+
+    return expected
+
+
 def check_fc_an_aggregation():
     """
-    Phase 2b: Check checkpoint completeness for all IFS/AIFS parquets.
-    Returns list of (path, reason) tuples.
+    Phase 2b: Check expected vs. present parquets and completeness of present ones.
+    Returns list of (path, reason) tuples flagged for cleanup.
     """
     chunks = [
         ("ifs_fc_monthly",  _FC_CHUNK_PAT, "valid_time"),
         ("aifs_fc_monthly", _FC_CHUNK_PAT, "valid_time"),
         ("ifs_an_monthly",  _AN_CHUNK_PAT, "time"),
     ]
+    expected_by_subdir = _expected_fc_an_parquets()
 
     flagged = []
-    summary = {}  # subdir → (n_ok, n_incomplete, n_legacy)
 
     print("=== Phase 2b: IFS/AIFS Aggregation ===")
     for subdir, pat, time_col in chunks:
         monthly_dir = os.path.join(AGGREGATED_DIR, subdir)
+        expected_names = expected_by_subdir[subdir]
+        n_expected = len(expected_names)
+
         if not os.path.isdir(monthly_dir):
-            print(f"  {subdir}: MISSING directory")
+            print(f"  {subdir}: MISSING directory ({n_expected} parquets expected)")
             continue
 
-        paths = sorted(glob.glob(os.path.join(monthly_dir, "*.parquet")))
-        n_ok = n_incomplete = 0
+        found_paths = {
+            os.path.basename(p): p
+            for p in glob.glob(os.path.join(monthly_dir, "*.parquet"))
+        }
+        missing_names = sorted(expected_names - found_paths.keys())
+        n_ok = n_incomplete = n_missing = len(missing_names)
+        n_ok = 0
         detail_lines = []
 
-        for path in paths:
-            m = pat.search(os.path.basename(path))
+        # Report missing first
+        for name in missing_names:
+            if len(detail_lines) < _MAX_DETAIL_LINES:
+                detail_lines.append(f"    MISSING     {name}")
+
+        # Check completeness of present parquets
+        for name in sorted(expected_names - set(missing_names)):
+            path = found_paths[name]
+            m = pat.search(name)
             if not m:
                 continue
-
             yr, mo = int(m.group("yr")), int(m.group("mo"))
             days = calendar.monthrange(yr, mo)[1]
             # Theoretical max: FC has 2 init hours/day; AN has 4 analysis times/day.
-            expected = 4 * days if subdir.endswith("an_monthly") else 2 * days
+            expected_times = 4 * days if subdir.endswith("an_monthly") else 2 * days
 
             unique_times = _parquet_unique_count(path, time_col)
-            if unique_times < expected:
+            if unique_times < expected_times:
                 n_incomplete += 1
-                flagged.append((path, f"INCOMPLETE ({unique_times}/{expected})"))
+                flagged.append((path, f"INCOMPLETE ({unique_times}/{expected_times})"))
                 if len(detail_lines) < _MAX_DETAIL_LINES:
                     detail_lines.append(
-                        f"    INCOMPLETE  {os.path.basename(path)} ({unique_times}/{expected})"
+                        f"    INCOMPLETE  {name} ({unique_times}/{expected_times})"
                     )
             else:
                 n_ok += 1
 
-        total = n_ok + n_incomplete
+        n_present = n_expected - n_missing
         print(
-            f"  {subdir}: {total} parquets — {n_ok} OK"
-            + (f", {n_incomplete} incomplete" if n_incomplete else "")
+            f"  {subdir}: {n_present}/{n_expected} present — {n_ok} OK"
+            + (f", {n_incomplete - n_missing} incomplete" if n_incomplete > n_missing else "")
+            + (f", {n_missing} missing" if n_missing else "")
         )
         for line in detail_lines:
             print(line)
