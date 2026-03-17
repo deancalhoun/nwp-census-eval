@@ -524,13 +524,13 @@ def main():
 
         # — Day-of-year × lead contour plots ────────────────────────────────
         df_doy = q("""
-            SELECT DAY_OF_YEAR(valid_time) AS doy,
+            SELECT DAY_OF_YEAR(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
                 lead_time,
                 SUM(bias      * aland) / SUM(aland) AS aw_bias,
                 SUM(abs_error * aland) / SUM(aland) AS aw_mae
             FROM ifs_bias
-            WHERE DAY_OF_YEAR(valid_time) < 366
-            GROUP BY DAY_OF_YEAR(valid_time), lead_time
+            WHERE NOT (MONTH(valid_time) = 2 AND DAY(valid_time) = 29)
+            GROUP BY doy, lead_time
             ORDER BY doy, lead_time
         """)
         doys = list(range(1, 366))
@@ -566,12 +566,12 @@ def main():
 
         if HAS_ANOM:
             df_acc_doy = q("""
-                SELECT DAY_OF_YEAR(valid_time) AS doy,
+                SELECT DAY_OF_YEAR(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
                     lead_time,
                     CORR(fc_anom, an_anom) AS acc
                 FROM ifs_anom
-                WHERE DAY_OF_YEAR(valid_time) < 366
-                GROUP BY DAY_OF_YEAR(valid_time), lead_time
+                WHERE NOT (MONTH(valid_time) = 2 AND DAY(valid_time) = 29)
+                GROUP BY doy, lead_time
                 ORDER BY doy, lead_time
             """)
             pivot_acc_doy = (df_acc_doy.pivot(index="lead_time", columns="doy", values="acc")
