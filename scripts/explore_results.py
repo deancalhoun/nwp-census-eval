@@ -535,7 +535,7 @@ def main():
 
         # — Day-of-year × lead contour plots ────────────────────────────────
         df_doy = q("""
-            SELECT DAY_OF_YEAR(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
+            SELECT dayofyear(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
                 lead_time,
                 SUM(bias      * aland) / SUM(aland) AS aw_bias,
                 SUM(abs_error * aland) / SUM(aland) AS aw_mae
@@ -577,7 +577,7 @@ def main():
 
         if HAS_ANOM:
             df_acc_doy = q("""
-                SELECT DAY_OF_YEAR(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
+                SELECT dayofyear(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
                     lead_time,
                     CORR(fc_anom, an_anom) AS acc
                 FROM ifs_anom
