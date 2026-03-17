@@ -90,8 +90,9 @@ REDS     = "YlOrRd"
 SKILL_CM = "RdYlGn"      # red = poor skill, green = good
 PDF_BIN_K = 0.5
 
-MODEL_COLORS = {"IFS": "#1f77b4", "AIFS": "#ff7f0e", "IFS_sub": "#aec7e8"}
-MODEL_LS     = {"IFS": "-",       "AIFS": "-",        "IFS_sub": "--"}
+MODEL_COLORS   = {"IFS": "#1f77b4", "AIFS": "#ff7f0e", "IFS_sub": "#aec7e8"}
+MODEL_LS       = {"IFS": "-",       "AIFS": "--",       "IFS_sub": ":"}
+MODEL_MARKERS  = {"IFS": "o",       "AIFS": "s",        "IFS_sub": "^"}
 
 KOPPEN_NAMES = {
     1:  "Af — Tropical rainforest",
@@ -425,8 +426,9 @@ def main():
             ax.set_title(title)
             ax.grid(True, alpha=0.3)
             if ax is ax_acc:
-                lo = min(l.get_ydata().min() for l in ax.get_lines()
-                         if len(l.get_ydata()) > 0)
+                vals = np.concatenate([l.get_ydata() for l in ax.get_lines()
+                                       if len(l.get_ydata()) > 0])
+                lo = float(np.nanmin(vals)) if len(vals) > 0 else 0.0
                 ax.set_ylim(lo - 0.03, 1.0)
 
         axes[0, 0].legend(fontsize=9)
@@ -480,7 +482,7 @@ def main():
         section("2  Timeseries")
         MA = 30
 
-        def _ts(bias_view, label, color):
+        def _ts(bias_view):
             df = q(f"""
                 SELECT CAST(valid_time AS DATE) AS day,
                     SUM(bias*aland)/SUM(aland)      AS aw_bias,
@@ -493,7 +495,7 @@ def main():
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
         for mname, bv, _ in MODELS:
-            df = _ts(bv, mname, MODEL_COLORS[mname])
+            df = _ts(bv)
             kw = dict(color=MODEL_COLORS[mname], lw=0.4, alpha=0.3)
             kw_ma = dict(color=MODEL_COLORS[mname], ls=MODEL_LS[mname], lw=1.8,
                          label=mname)
@@ -563,6 +565,9 @@ def main():
                 FROM {bias_view}
                 GROUP BY month, lead_time ORDER BY month, lead_time
             """)
+            if df.empty:
+                print(f"    {label}: no data — skipping monthly plots")
+                return
             leads  = sorted(df["lead_time"].unique())
             months = list(range(1, 13))
             X, Y = np.meshgrid(range(len(leads)), range(12))
@@ -617,13 +622,17 @@ def main():
                     FROM {anom_view}
                     GROUP BY month, lead_time ORDER BY month, lead_time
                 """)
+                if df_a.empty:
+                    print(f"    {label}: no anom data — skipping ACC/skill monthly plots")
+                    return
                 for col, lbl, fname_suffix in [
                     ("aw_acc",   "ACC",         "acc"),
                     ("aw_skill", "Skill score", "skill"),
                 ]:
                     pivot = (df_a.pivot(index="month", columns="lead_time", values=col)
                              .reindex(index=months, columns=leads))
-                    vmin = pivot.min().min() - 0.02
+                    raw_min = float(np.nanmin(pivot.values)) if not np.all(np.isnan(pivot.values)) else 0.0
+                    vmin = raw_min - 0.02
                     vmax = 1.0
                     levels = np.linspace(vmin, vmax, 15)
                     fig, ax = plt.subplots(figsize=(10, 5))
@@ -1212,8 +1221,8 @@ def main():
         classes = None
 
         for mname, bv, av in MODELS:
-            col  = MODEL_COLORS[mname]
-            ls   = MODEL_LS[mname]
+            ls     = MODEL_LS[mname]
+            marker = MODEL_MARKERS[mname]
             df_k = q(f"""
                 SELECT k.category_1 AS koppen, b.lead_time,
                     SUM(b.bias*b.aland)/SUM(b.aland)              AS aw_bias,
@@ -1223,6 +1232,8 @@ def main():
                 GROUP BY k.category_1, b.lead_time
                 ORDER BY k.category_1, b.lead_time
             """)
+            if df_k.empty:
+                continue
             if classes is None:
                 classes = sorted(df_k["koppen"].dropna().unique())
             cmap_k = mcm.get_cmap("tab10", len(classes))
@@ -1232,9 +1243,11 @@ def main():
                                             ["Bias (K)", "RMSE (K)", "MAE (K)"]):
                 for i, klass in enumerate(classes):
                     d = df_k[df_k["koppen"] == klass]
+                    # Label every class for IFS (color key); other models
+                    # are distinguished by linestyle + marker only
                     ax.plot(d["lead_time"], d[col_name], ls=ls, lw=1.1,
-                            color=cmap_k(i), ms=2, marker="o",
-                            label=f"{koppen_label(klass)} ({mname})" if mname == "IFS" else "")
+                            color=cmap_k(i), ms=3, marker=marker,
+                            label=koppen_label(klass) if mname == "IFS" else "")
 
             for row in df_k.itertuples():
                 for metric, val in [("bias", row.aw_bias),
@@ -1251,11 +1264,21 @@ def main():
             ax.set_xlabel("Lead time (h)"); ax.set_ylabel(ylabel)
             ax.set_title(f"Skill by Koppen class — {title}")
             ax.grid(True, alpha=0.3)
-        handles, lbls = axes[0].get_legend_handles_labels()
-        fig.legend(handles, lbls, loc="lower center",
-                   ncol=min(len(classes or []), 4), fontsize=7,
-                   bbox_to_anchor=(0.5, -0.15))
-        fig.suptitle("Skill by Koppen-Geiger class (solid=IFS, dashed=IFS_sub, orange=AIFS)",
+
+        # Two-part legend: Koppen class colors (from IFS lines) + model style guide
+        koppen_handles, koppen_lbls = axes[0].get_legend_handles_labels()
+        import matplotlib.lines as mlines
+        style_handles = [
+            mlines.Line2D([], [], color="k", ls=MODEL_LS[m], marker=MODEL_MARKERS[m],
+                          ms=4, lw=1.1, label=m)
+            for m, _, _ in MODELS
+        ]
+        fig.legend(koppen_handles + style_handles,
+                   koppen_lbls + [m for m, _, _ in MODELS],
+                   loc="lower center",
+                   ncol=min((len(classes or []) + len(MODELS)), 5),
+                   fontsize=7, bbox_to_anchor=(0.5, -0.18))
+        fig.suptitle("Skill by Koppen-Geiger class — color = class, style = model",
                      fontsize=11)
         plt.tight_layout()
         savefig(fig, f"{OUT}/09_koppen/skill_by_koppen.png")
