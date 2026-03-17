@@ -86,7 +86,6 @@ MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 RDBU     = "RdBu_r"
 REDS     = "YlOrRd"
-SKILL_CM = "RdYlGn"      # red = poor skill, green = good
 PDF_BIN_K = 0.5
 
 MODEL_COLORS   = {"IFS": "#1f77b4", "AIFS": "#ff7f0e", "IFS_sub": "#aec7e8"}
@@ -154,16 +153,6 @@ def _wa_acc(fc="fc_anom", an="an_anom", w="aland"):
         0
     )"""
 
-
-def _wa_skill(bias="bias", an="an_anom", w="aland"):
-    """MSE skill score = 1 − MSE/an_var, area-weighted.
-
-    Baseline: climatology (f=c → MSE = an_var → skill = 0).
-    """
-    return (
-        f"1.0 - (SUM({w}*{bias}*{bias})/SUM({w}))"
-        f" / NULLIF(SUM({w}*{an}*{an})/SUM({w}), 0)"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -362,127 +351,96 @@ def main():
     def sec1():
         section("1  Aggregate skill curves")
 
-        fig, axes = plt.subplots(2, 3, figsize=(17, 9), constrained_layout=True)
-        ax_bias, ax_rmse, ax_mae = axes[0]
-        ax_skill, ax_acc, ax_blank = axes[1]
-        ax_blank.set_visible(False)
+        # 5 rows (All + 4 seasons) × 3 cols (RMSE, MAE, ACC)
+        # Each row: lines = models, x = lead time
+        SEASONS    = ["DJF", "MAM", "JJA", "SON"]
+        row_labels = ["All time"] + SEASONS
+        col_specs  = [
+            ("aw_rmse", "RMSE (K)",    False),
+            ("aw_mae",  "MAE (K)",     False),
+            ("aw_acc",  "ACC",         True),   # True = needs anom view
+        ]
 
-        for mname, bv, av in MODELS:
-            col = MODEL_COLORS[mname]
-            ls  = MODEL_LS[mname]
-            kw  = dict(color=col, ls=ls, marker="o", ms=3, lw=1.3, label=mname)
+        fig, axes = plt.subplots(5, 3, figsize=(15, 16), constrained_layout=True,
+                                 sharex=True)
 
-            df_b = q(f"""
-                SELECT lead_time,
-                    SUM(bias*aland)/SUM(aland)              AS aw_bias,
-                    SQRT(SUM(bias*bias*aland)/SUM(aland))   AS aw_rmse,
-                    SUM(abs_error*aland)/SUM(aland)         AS aw_mae
-                FROM {bv}
-                WHERE lead_time IN ({leads_sql})
-                GROUP BY lead_time ORDER BY lead_time
-            """)
-            ax_bias.plot(df_b["lead_time"], df_b["aw_bias"], **kw)
-            ax_rmse.plot(df_b["lead_time"], df_b["aw_rmse"], **kw)
-            ax_mae.plot( df_b["lead_time"], df_b["aw_mae"],  **kw)
+        for ri, (row_lbl, season) in enumerate(zip(row_labels, [None] + SEASONS)):
+            sf = f" AND {_season_sql()} = '{season}'" if season else ""
+            sf_a = sf  # same filter applies to anom views
 
-            for row in df_b.itertuples():
-                summary_rows.append({
-                    "model": mname, "group": "all", "lead_time": int(row.lead_time),
-                    "metric": "bias",  "value": row.aw_bias,
-                })
-                summary_rows.append({
-                    "model": mname, "group": "all", "lead_time": int(row.lead_time),
-                    "metric": "rmse",  "value": row.aw_rmse,
-                })
-                summary_rows.append({
-                    "model": mname, "group": "all", "lead_time": int(row.lead_time),
-                    "metric": "mae",   "value": row.aw_mae,
-                })
+            for mname, bv, av in MODELS:
+                kw = dict(color=MODEL_COLORS[mname], ls=MODEL_LS[mname],
+                          marker=MODEL_MARKERS[mname], ms=3, lw=1.3,
+                          label=mname if ri == 0 else "")
 
-            if av:
-                df_a = q(f"""
+                df_b = q(f"""
                     SELECT lead_time,
-                        {_wa_skill()} AS aw_skill,
-                        {_wa_acc()}   AS aw_acc
-                    FROM {av}
-                    WHERE lead_time IN ({leads_anom_sql})
+                        SQRT(SUM(bias*bias*aland)/SUM(aland)) AS aw_rmse,
+                        SUM(abs_error*aland)/SUM(aland)       AS aw_mae
+                    FROM {bv}
+                    WHERE lead_time IN ({leads_sql}){sf}
                     GROUP BY lead_time ORDER BY lead_time
                 """)
-                ax_skill.plot(df_a["lead_time"], df_a["aw_skill"], **kw)
-                ax_acc.plot(  df_a["lead_time"], df_a["aw_acc"],   **kw)
+                axes[ri, 0].plot(df_b["lead_time"], df_b["aw_rmse"], **kw)
+                axes[ri, 1].plot(df_b["lead_time"], df_b["aw_mae"],  **kw)
 
-                for row in df_a.itertuples():
-                    summary_rows.append({
-                        "model": mname, "group": "all", "lead_time": int(row.lead_time),
-                        "metric": "skill", "value": row.aw_skill,
-                    })
-                    summary_rows.append({
-                        "model": mname, "group": "all", "lead_time": int(row.lead_time),
-                        "metric": "acc",   "value": row.aw_acc,
-                    })
+                if av:
+                    df_a = q(f"""
+                        SELECT lead_time, {_wa_acc()} AS aw_acc
+                        FROM {av}
+                        WHERE lead_time IN ({leads_anom_sql}){sf_a}
+                        GROUP BY lead_time ORDER BY lead_time
+                    """)
+                    axes[ri, 2].plot(df_a["lead_time"], df_a["aw_acc"], **kw)
 
-        ax_bias.axhline(0, color="k", lw=0.8, ls="--")
-        ax_skill.axhline(0, color="k", lw=0.8, ls="--")
+                    for row in df_a.itertuples():
+                        summary_rows.append({
+                            "model": mname,
+                            "group": f"season_{season}" if season else "all",
+                            "lead_time": int(row.lead_time),
+                            "metric": "acc", "value": row.aw_acc,
+                        })
 
-        for ax, ylabel, title in [
-            (ax_bias,  "Bias (K)",    "Mean bias"),
-            (ax_rmse,  "RMSE (K)",    "RMSE"),
-            (ax_mae,   "MAE (K)",     "MAE"),
-            (ax_skill, "Skill score", "MSE skill score  (0 = climatology)"),
-            (ax_acc,   "ACC",         "Anomaly correlation (area-weighted)"),
-        ]:
+                for row in df_b.itertuples():
+                    grp = f"season_{season}" if season else "all"
+                    for metric, val in [("rmse", row.aw_rmse), ("mae", row.aw_mae)]:
+                        summary_rows.append({
+                            "model": mname, "group": grp,
+                            "lead_time": int(row.lead_time),
+                            "metric": metric, "value": val,
+                        })
+
+            # Row label on left of first column
+            axes[ri, 0].annotate(row_lbl, xy=(-0.18, 0.5),
+                                 xycoords="axes fraction",
+                                 fontsize=9, ha="right", va="center",
+                                 fontweight="bold", rotation=90)
+
+        # ACC y-limits (NaN-safe)
+        for ri in range(5):
+            ax = axes[ri, 2]
+            vals = np.concatenate([l.get_ydata() for l in ax.get_lines()
+                                   if len(l.get_ydata()) > 0])
+            lo = float(np.nanmin(vals)) if len(vals) > 0 else 0.0
+            ax.set_ylim(lo - 0.03, 1.0)
+
+        # Column titles
+        for ci, (_, ylabel, _) in enumerate(col_specs):
+            axes[0, ci].set_title(ylabel, fontsize=10, fontweight="bold")
+
+        # x-labels on bottom row only
+        for ax in axes[-1]:
             ax.set_xlabel("Lead time (h)")
-            ax.set_ylabel(ylabel)
-            ax.set_title(title)
-            ax.grid(True, alpha=0.3)
-            if ax is ax_acc:
-                vals = np.concatenate([l.get_ydata() for l in ax.get_lines()
-                                       if len(l.get_ydata()) > 0])
-                lo = float(np.nanmin(vals)) if len(vals) > 0 else 0.0
-                ax.set_ylim(lo - 0.03, 1.0)
 
-        axes[0, 0].legend(fontsize=9)
+        # y-labels on each row
+        for ri in range(5):
+            for ci, (_, ylabel, _) in enumerate(col_specs):
+                axes[ri, ci].set_ylabel(ylabel, fontsize=8)
+                axes[ri, ci].grid(True, alpha=0.3)
+
+        axes[0, 0].legend(fontsize=9, loc="upper right")
         fig.suptitle("NWP 2m Temperature Forecast Skill (area-weighted)", fontsize=12)
         savefig(fig, f"{OUT}/01_skill/skill_curves.png")
-
-        # Seasonal breakdown of skill by model
-        for mname, bv, av in MODELS:
-            df_seas = q(f"""
-                SELECT {_season_sql()} AS season, lead_time,
-                    SUM(bias*aland)/SUM(aland)              AS aw_bias,
-                    SQRT(SUM(bias*bias*aland)/SUM(aland))   AS aw_rmse,
-                    SUM(abs_error*aland)/SUM(aland)         AS aw_mae
-                FROM {bv}
-                WHERE lead_time IN ({leads_sql})
-                GROUP BY season, lead_time ORDER BY season, lead_time
-            """)
-            seasons = ["DJF", "MAM", "JJA", "SON"]
-            fig, axes2 = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
-            cmap_s = matplotlib.colormaps["tab10"].resampled(4)
-            for ax, col, ylabel in zip(axes2,
-                                       ["aw_bias", "aw_rmse", "aw_mae"],
-                                       ["Bias (K)", "RMSE (K)", "MAE (K)"]):
-                for i, s in enumerate(seasons):
-                    d = df_seas[df_seas["season"] == s]
-                    ax.plot(d["lead_time"], d[col], "o-", ms=3, lw=1.2,
-                            color=cmap_s(i), label=s)
-                if col == "aw_bias":
-                    ax.axhline(0, color="k", lw=0.8, ls="--")
-                ax.set_xlabel("Lead time (h)")
-                ax.set_ylabel(ylabel)
-                ax.grid(True, alpha=0.3)
-                ax.legend(fontsize=8)
-            fig.suptitle(f"{mname} — skill by season", fontsize=11)
-            savefig(fig, f"{OUT}/01_skill/{mname.lower()}_skill_by_season.png")
-
-            for row in df_seas.itertuples():
-                for metric, val in [("bias", row.aw_bias),
-                                     ("rmse", row.aw_rmse),
-                                     ("mae",  row.aw_mae)]:
-                    summary_rows.append({
-                        "model": mname, "group": f"season_{row.season}",
-                        "lead_time": int(row.lead_time), "metric": metric, "value": val,
-                    })
 
     try_section("1", sec1)
 
@@ -493,71 +451,68 @@ def main():
         section("2  Timeseries")
         MA = 30
 
-        def _ts(bias_view):
+        ifs_m   = next((m for m in MODELS if m[0] == "IFS"),     None)
+        aifs_m  = next((m for m in MODELS if m[0] == "AIFS"),    None)
+        ifsub_m = next((m for m in MODELS if m[0] == "IFS_sub"), None)
+
+        if not ifs_m:
+            print("  Skipped — IFS not in MODELS")
+            return
+
+        has_comparison = aifs_m is not None and ifsub_m is not None
+
+        def _daily(bv, lead):
             df = q(f"""
                 SELECT CAST(valid_time AS DATE) AS day,
-                    SUM(bias*aland)/SUM(aland)      AS aw_bias,
-                    SUM(abs_error*aland)/SUM(aland) AS aw_mae
-                FROM {bias_view}
+                    SQRT(SUM(bias*bias*aland)/SUM(aland)) AS aw_rmse,
+                    SUM(abs_error*aland)/SUM(aland)       AS aw_mae
+                FROM {bv}
+                WHERE lead_time = {lead}
                 GROUP BY day ORDER BY day
             """)
             df["day"] = pd.to_datetime(df["day"])
             return df
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 6), sharex=True)
-        for mname, bv, _ in MODELS:
-            df = _ts(bv)
-            kw = dict(color=MODEL_COLORS[mname], lw=0.4, alpha=0.3)
-            kw_ma = dict(color=MODEL_COLORS[mname], ls=MODEL_LS[mname], lw=1.8,
-                         label=mname)
-            ax1.plot(df["day"], df["aw_bias"], **kw)
-            ax1.plot(df["day"],
-                     df["aw_bias"].rolling(MA, center=True, min_periods=MA//2).mean(),
-                     **kw_ma)
-            ax2.plot(df["day"], df["aw_mae"], **kw)
-            ax2.plot(df["day"],
-                     df["aw_mae"].rolling(MA, center=True, min_periods=MA//2).mean(),
-                     **kw_ma)
+        def _draw_ts(ax, df, col, mname):
+            c = MODEL_COLORS[mname]
+            ls = MODEL_LS[mname]
+            ax.plot(df["day"], df[col], color=c, lw=0.4, alpha=0.25)
+            ax.plot(df["day"],
+                    df[col].rolling(MA, center=True, min_periods=MA // 2).mean(),
+                    color=c, ls=ls, lw=1.8, label=mname)
 
-        ax1.axhline(0, color="k", lw=0.8, ls="--")
-        ax1.set_ylabel("Bias (K)")
-        ax1.set_title(f"Area-weighted mean bias — all leads, all counties ({MA}-day MA bold)")
-        ax1.legend(fontsize=8, loc="upper right")
-        ax1.grid(True, alpha=0.3, axis="y")
-        ax2.set_ylabel("MAE (K)")
-        ax2.set_xlabel("Date")
-        ax2.set_title("Area-weighted MAE")
-        ax2.legend(fontsize=8, loc="upper right")
-        ax2.grid(True, alpha=0.3)
-        plt.tight_layout()
-        savefig(fig, f"{OUT}/02_timeseries/daily_bias_mae.png")
+        for lead in all_leads:
+            ncols = 2 if has_comparison else 1
+            fig, axes = plt.subplots(2, ncols, figsize=(8 * ncols, 6),
+                                     sharex="col", sharey="row",
+                                     constrained_layout=True)
+            if ncols == 1:
+                axes = axes.reshape(2, 1)
 
-        # Per-lead timeseries overlay — IFS only
-        KEY_LEADS = [lt for lt in [24, 72, 120, 240] if lt in set(all_leads)]
-        if KEY_LEADS:
-            df_lt = q(f"""
-                SELECT CAST(valid_time AS DATE) AS day, lead_time,
-                    SUM(bias*aland)/SUM(aland) AS aw_bias
-                FROM ifs_bias
-                WHERE lead_time IN ({",".join(str(l) for l in KEY_LEADS)})
-                GROUP BY day, lead_time ORDER BY day, lead_time
-            """)
-            df_lt["day"] = pd.to_datetime(df_lt["day"])
-            cmap_lt = matplotlib.colormaps["plasma"].resampled(len(KEY_LEADS))
-            fig, ax = plt.subplots(figsize=(14, 4))
-            for i, lt in enumerate(KEY_LEADS):
-                d = df_lt[df_lt["lead_time"] == lt].sort_values("day")
-                ma = d["aw_bias"].rolling(MA, center=True, min_periods=MA//2).mean()
-                ax.plot(d["day"], d["aw_bias"], lw=0.4, color=cmap_lt(i), alpha=0.3)
-                ax.plot(d["day"], ma, lw=1.8, color=cmap_lt(i), label=f"{lt}h")
-            ax.axhline(0, color="k", lw=0.8, ls="--")
-            ax.set_ylabel("Area-weighted bias (K)")
-            ax.set_xlabel("Date")
-            ax.set_title(f"IFS — daily bias by lead ({MA}-day MA)")
-            ax.legend(title="Lead", fontsize=8, ncol=len(KEY_LEADS))
-            ax.grid(True, alpha=0.3)
-            plt.tight_layout()
-            savefig(fig, f"{OUT}/02_timeseries/ifs_daily_bias_by_lead.png")
+            # Left column: IFS full record
+            df_ifs = _daily(ifs_m[1], lead)
+            for row, col in enumerate(["aw_rmse", "aw_mae"]):
+                _draw_ts(axes[row, 0], df_ifs, col, "IFS")
+                axes[row, 0].set_ylabel("RMSE (K)" if col == "aw_rmse" else "MAE (K)")
+                axes[row, 0].grid(True, alpha=0.3)
+            axes[0, 0].set_title(f"IFS — lead {lead}h", fontweight="bold")
+            axes[0, 0].legend(fontsize=8)
+            axes[1, 0].set_xlabel("Date")
+
+            # Right column: AIFS vs IFS_sub (same period)
+            if has_comparison:
+                for row, col in enumerate(["aw_rmse", "aw_mae"]):
+                    for m, bv, _ in [aifs_m, ifsub_m]:
+                        _draw_ts(axes[row, 1], _daily(bv, lead), col, m)
+                    axes[row, 1].set_ylabel("RMSE (K)" if col == "aw_rmse" else "MAE (K)")
+                    axes[row, 1].grid(True, alpha=0.3)
+                axes[0, 1].set_title(f"AIFS vs IFS_sub — lead {lead}h", fontweight="bold")
+                axes[0, 1].legend(fontsize=8)
+                axes[1, 1].set_xlabel("Date")
+
+            fig.suptitle(f"Daily RMSE / MAE — lead {lead}h  ({MA}-day MA bold)",
+                         fontsize=11)
+            savefig(fig, f"{OUT}/02_timeseries/timeseries_lead{lead}h.png")
 
     try_section("2", sec2)
 
@@ -571,8 +526,9 @@ def main():
         def _monthly(bias_view, anom_view, label):
             df = q(f"""
                 SELECT MONTH(valid_time) AS month, lead_time,
-                    SUM(bias*aland)/SUM(aland)      AS aw_bias,
-                    SUM(abs_error*aland)/SUM(aland) AS aw_mae
+                    SUM(bias*aland)/SUM(aland)            AS aw_bias,
+                    SQRT(SUM(bias*bias*aland)/SUM(aland)) AS aw_rmse,
+                    SUM(abs_error*aland)/SUM(aland)       AS aw_mae
                 FROM {bias_view}
                 WHERE lead_time IN ({leads_sql})
                 GROUP BY month, lead_time ORDER BY month, lead_time
@@ -585,13 +541,14 @@ def main():
             X, Y = np.meshgrid(range(len(leads)), range(12))
 
             for col, cmap, lbl, diverging, fname_suffix in [
-                ("aw_bias", RDBU, "Bias (K)", True,  "bias"),
-                ("aw_mae",  REDS, "MAE (K)",  False, "mae"),
+                ("aw_bias", RDBU, "Bias (K)",  True,  "bias"),
+                ("aw_rmse", REDS, "RMSE (K)",  False, "rmse"),
+                ("aw_mae",  REDS, "MAE (K)",   False, "mae"),
             ]:
                 pivot = (df.pivot(index="month", columns="lead_time", values=col)
                          .reindex(index=months, columns=leads))
-                absmax = pivot.abs().max().max()
-                vmin = -absmax if diverging else pivot.min().min()
+                absmax = float(pivot.abs().max().max())
+                vmin = -absmax if diverging else float(pivot.min().min())
                 vmax =  absmax
 
                 # Heatmap
@@ -629,30 +586,25 @@ def main():
             if anom_view:
                 df_a = q(f"""
                     SELECT MONTH(valid_time) AS month, lead_time,
-                        {_wa_acc()} AS aw_acc,
-                        {_wa_skill()} AS aw_skill
+                        {_wa_acc()} AS aw_acc
                     FROM {anom_view}
                     WHERE lead_time IN ({leads_anom_sql})
                     GROUP BY month, lead_time ORDER BY month, lead_time
                 """)
                 if df_a.empty:
-                    print(f"    {label}: no anom data — skipping ACC/skill monthly plots")
+                    print(f"    {label}: no anom data — skipping ACC monthly plots")
                     return
                 for col, lbl, fname_suffix in [
-                    ("aw_acc",   "ACC",         "acc"),
-                    ("aw_skill", "Skill score", "skill"),
+                    ("aw_acc", "ACC", "acc"),
                 ]:
                     pivot = (df_a.pivot(index="month", columns="lead_time", values=col)
                              .reindex(index=months, columns=leads))
                     raw_min = float(np.nanmin(pivot.values)) if not np.all(np.isnan(pivot.values)) else 0.0
                     vmin = raw_min - 0.02
                     vmax = 1.0
-                    levels = np.linspace(vmin, vmax, 15)
                     fig, ax = plt.subplots(figsize=(10, 5))
-                    cf = ax.contourf(X, Y, pivot.values, levels=levels,
-                                    cmap="viridis", extend="both")
-                    ax.contour(X, Y, pivot.values, levels=levels,
-                               colors="k", linewidths=0.3, alpha=0.4)
+                    im = ax.imshow(pivot.values, aspect="auto", cmap="viridis",
+                                   vmin=vmin, vmax=vmax, origin="lower")
                     ax.set_xticks(range(len(leads)))
                     ax.set_xticklabels([f"{lt}h" for lt in leads], fontsize=7)
                     ax.set_yticks(range(12))
@@ -660,7 +612,7 @@ def main():
                     ax.set_xlabel("Lead time (h)")
                     ax.set_ylabel("Month")
                     ax.set_title(f"{label} — {lbl} by lead × month")
-                    plt.colorbar(cf, ax=ax, label=lbl)
+                    plt.colorbar(im, ax=ax, label=lbl)
                     plt.tight_layout()
                     savefig(fig, f"{OUT}/03_seasonal_cycle/{label.lower()}_{fname_suffix}_lead_x_month.png")
 
@@ -672,8 +624,9 @@ def main():
         df_doy = q(f"""
             SELECT dayofyear(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
                 lead_time,
-                SUM(bias*aland)/SUM(aland)      AS aw_bias,
-                SUM(abs_error*aland)/SUM(aland) AS aw_mae
+                SUM(bias*aland)/SUM(aland)            AS aw_bias,
+                SQRT(SUM(bias*bias*aland)/SUM(aland)) AS aw_rmse,
+                SUM(abs_error*aland)/SUM(aland)       AS aw_mae
             FROM ifs_bias
             WHERE NOT (MONTH(valid_time) = 2 AND DAY(valid_time) = 29)
               AND lead_time IN ({leads_sql})
@@ -684,13 +637,14 @@ def main():
         mstarts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
 
         for col, cmap, lbl, diverging, fname_suffix in [
-            ("aw_bias", RDBU, "Bias (K)", True,  "bias"),
-            ("aw_mae",  REDS, "MAE (K)",  False, "mae"),
+            ("aw_bias", RDBU, "Bias (K)",  True,  "bias"),
+            ("aw_rmse", REDS, "RMSE (K)",  False, "rmse"),
+            ("aw_mae",  REDS, "MAE (K)",   False, "mae"),
         ]:
             pivot = (df_doy.pivot(index="doy", columns="lead_time", values=col)
                      .reindex(index=doys, columns=leads_doy))
-            absmax = pivot.abs().max().max()
-            vmin = -absmax if diverging else pivot.min().min()
+            absmax = float(pivot.abs().max().max())
+            vmin = -absmax if diverging else float(pivot.min().min())
             vmax =  absmax
             fig, ax = plt.subplots(figsize=(10, 12))
             im = ax.imshow(pivot.values, aspect="auto", cmap=cmap,
@@ -707,21 +661,18 @@ def main():
             savefig(fig, f"{OUT}/03_seasonal_cycle/ifs_{fname_suffix}_lead_x_doy.png")
 
         if HAS_ANOM:
-            _acc_sql   = _wa_acc()
-            _skill_sql = _wa_skill()
+            _acc_sql = _wa_acc()
             df_acc_doy = q(f"""
                 SELECT dayofyear(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
                     lead_time,
-                    {_acc_sql}   AS aw_acc,
-                    {_skill_sql} AS aw_skill
+                    {_acc_sql} AS aw_acc
                 FROM ifs_anom
                 WHERE NOT (MONTH(valid_time) = 2 AND DAY(valid_time) = 29)
                   AND lead_time IN ({leads_anom_sql})
                 GROUP BY doy, lead_time ORDER BY doy, lead_time
             """)
             for col, lbl, fname_suffix in [
-                ("aw_acc",   "ACC",         "acc"),
-                ("aw_skill", "Skill score", "skill"),
+                ("aw_acc", "ACC", "acc"),
             ]:
                 pivot = (df_acc_doy.pivot(index="doy", columns="lead_time", values=col)
                          .reindex(index=doys, columns=leads_doy))
@@ -744,8 +695,9 @@ def main():
         # Hovmöller: lead (x) × monthly valid time (y) — IFS
         df_hov = q(f"""
             SELECT DATE_TRUNC('month', valid_time) AS mdate, lead_time,
-                SUM(bias*aland)/SUM(aland)      AS aw_bias,
-                SUM(abs_error*aland)/SUM(aland) AS aw_mae
+                SUM(bias*aland)/SUM(aland)            AS aw_bias,
+                SQRT(SUM(bias*bias*aland)/SUM(aland)) AS aw_rmse,
+                SUM(abs_error*aland)/SUM(aland)       AS aw_mae
             FROM ifs_bias
             WHERE lead_time IN ({leads_sql})
             GROUP BY mdate, lead_time ORDER BY mdate, lead_time
@@ -754,27 +706,29 @@ def main():
         months_ts = sorted(df_hov["mdate"].unique())
         n_m = len(months_ts)
         tick_idx = list(range(0, n_m, 3))
-        # Hovmöller uses actual lead values on x-axis (contourf, not imshow)
-        X_h, Y_h = np.meshgrid(leads_doy, range(n_m))
 
         for col, cmap, lbl, diverging, fname_suffix in [
-            ("aw_bias", RDBU, "Bias (K)", True,  "bias"),
-            ("aw_mae",  REDS, "MAE (K)",  False, "mae"),
+            ("aw_bias", RDBU, "Bias (K)",  True,  "bias"),
+            ("aw_rmse", REDS, "RMSE (K)",  False, "rmse"),
+            ("aw_mae",  REDS, "MAE (K)",   False, "mae"),
         ]:
             pivot = (df_hov.pivot(index="mdate", columns="lead_time", values=col)
                      .reindex(index=months_ts, columns=leads_doy))
-            absmax = pivot.abs().max().max()
-            vmin = -absmax if diverging else pivot.min().min()
+            absmax = float(pivot.abs().max().max())
+            vmin = -absmax if diverging else float(pivot.min().min())
             vmax =  absmax
             levels = np.linspace(vmin, vmax, 15)
+            X_h, Y_h = np.meshgrid(range(len(leads_doy)), range(n_m))
             fig, ax = plt.subplots(figsize=(10, max(6, n_m * 0.3)))
             cf = ax.contourf(X_h, Y_h, pivot.values, levels=levels, cmap=cmap, extend="both")
             ax.contour(X_h, Y_h, pivot.values, levels=levels,
                        colors="k", linewidths=0.3, alpha=0.4)
-            ax.set_xticks(leads_doy)
-            ax.set_xticklabels([f"{lt}h" for lt in leads_doy], fontsize=7, rotation=45, ha="right")
+            ax.set_xticks(range(len(leads_doy)))
+            ax.set_xticklabels([f"{lt}h" for lt in leads_doy], fontsize=7,
+                               rotation=45, ha="right")
             ax.set_yticks(tick_idx)
-            ax.set_yticklabels([months_ts[i].strftime("%b %Y") for i in tick_idx], fontsize=7)
+            ax.set_yticklabels([months_ts[i].strftime("%b %Y") for i in tick_idx],
+                               fontsize=7)
             ax.set_xlabel("Lead time (h)")
             ax.set_ylabel("Valid month")
             ax.set_title(f"IFS — Hovmöller {lbl} (lead × valid month)")
@@ -794,34 +748,28 @@ def main():
 
         col_specs = [
             # (col, cmap, diverging, label)
-            ("mean_bias",  RDBU,     True,  "Bias (K)"),
-            ("rmse",       REDS,     False, "RMSE (K)"),
-            ("skill",      SKILL_CM, True,  "Skill score"),
-            ("acc",        "viridis",False, "ACC"),
+            ("rmse", REDS,      False, "RMSE (K)"),
+            ("acc",  "viridis", False, "ACC"),
         ]
 
         def _query_maps(bv, av, lead, season_filter=""):
             df_b = prep_geo(q(f"""
                 SELECT geo_id,
-                    SUM(bias*aland)/SUM(aland)              AS mean_bias,
-                    SQRT(SUM(bias*bias*aland)/SUM(aland))   AS rmse
+                    SQRT(SUM(bias*bias*aland)/SUM(aland)) AS rmse
                 FROM {bv}
                 WHERE lead_time = {lead}{season_filter}
                 GROUP BY geo_id
             """))
             if av:
                 df_a = prep_geo(q(f"""
-                    SELECT geo_id,
-                        {_wa_skill()} AS skill,
-                        {_wa_acc()}   AS acc
+                    SELECT geo_id, {_wa_acc()} AS acc
                     FROM {av}
                     WHERE lead_time = {lead}{season_filter}
                     GROUP BY geo_id
                 """))
                 df_b = df_b.merge(df_a, on="geo_id", how="left")
             else:
-                df_b["skill"] = float("nan")
-                df_b["acc"]   = float("nan")
+                df_b["acc"] = float("nan")
             return df_b
 
         for mname, bv, av in MODELS:
@@ -846,7 +794,7 @@ def main():
                     for s in SEASONS
                 ]
 
-                fig, axes = plt.subplots(5, 4, figsize=(20, 14), constrained_layout=True)
+                fig, axes = plt.subplots(5, 2, figsize=(12, 14), constrained_layout=True)
                 for ri, (row_lbl, df_row) in enumerate(zip(row_labels, row_queries)):
                     for ci, (col, cmap, diverging, lbl) in enumerate(col_specs):
                         ax = axes[ri, ci]
@@ -871,24 +819,23 @@ def main():
                                  ax=axes[:, ci].tolist(),
                                  location="bottom", pad=0.01, fraction=0.03, label=lbl)
 
-                fig.suptitle(f"{mname} — bias / RMSE / skill / ACC  |  lead {lead}h",
-                             fontsize=12)
+                fig.suptitle(f"{mname} — RMSE / ACC  |  lead {lead}h", fontsize=12)
                 savefig(fig, f"{OUT}/04_maps/{mname.lower()}_maps_lead{lead}h.png")
 
-        # IFS_sub − AIFS difference maps (bias and skill)
+        # IFS_sub − AIFS difference maps (RMSE and ACC)
         ifs_sub = next((m for m in MODELS if m[0] == "IFS_sub"), None)
         aifs    = next((m for m in MODELS if m[0] == "AIFS"), None)
         if ifs_sub and aifs:
             for lead in all_leads:
                 df_i = _query_maps(ifs_sub[1], ifs_sub[2], lead)
                 df_a = _query_maps(aifs[1],    aifs[2],    lead)
-                df_diff = df_i.set_index("geo_id")[["mean_bias", "skill", "acc"]].subtract(
-                    df_a.set_index("geo_id")[["mean_bias", "skill", "acc"]]
+                df_diff = df_i.set_index("geo_id")[["rmse", "acc"]].subtract(
+                    df_a.set_index("geo_id")[["rmse", "acc"]]
                 ).reset_index()
-                fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
+                fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
                 for ax, col, lbl in zip(axes,
-                                        ["mean_bias", "skill", "acc"],
-                                        ["Δ Bias (K)", "Δ Skill", "Δ ACC"]):
+                                        ["rmse", "acc"],
+                                        ["Δ RMSE (K)", "Δ ACC"]):
                     if df_diff[col].isna().all():
                         ax.set_visible(False)
                         continue
@@ -1234,7 +1181,7 @@ def main():
         section("9  Koppen-Geiger interactions")
 
         # Skill by Koppen class vs lead — all models
-        fig, axes = plt.subplots(1, 3, figsize=(17, 5), constrained_layout=True)
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
         classes = None
 
         for mname, bv, av in MODELS:
@@ -1242,7 +1189,6 @@ def main():
             marker = MODEL_MARKERS[mname]
             df_k = q(f"""
                 SELECT k.category_1 AS koppen, b.lead_time,
-                    SUM(b.bias*b.aland)/SUM(b.aland)              AS aw_bias,
                     SQRT(SUM(b.bias*b.bias*b.aland)/SUM(b.aland)) AS aw_rmse,
                     SUM(b.abs_error*b.aland)/SUM(b.aland)         AS aw_mae
                 FROM {bv} b JOIN koppen k ON b.geo_id = k.geo_id
@@ -1257,8 +1203,8 @@ def main():
             cmap_k = matplotlib.colormaps["tab10"].resampled(len(classes))
 
             for ax, col_name, ylabel in zip(axes,
-                                            ["aw_bias", "aw_rmse", "aw_mae"],
-                                            ["Bias (K)", "RMSE (K)", "MAE (K)"]):
+                                            ["aw_rmse", "aw_mae"],
+                                            ["RMSE (K)", "MAE (K)"]):
                 for i, klass in enumerate(classes):
                     d = df_k[df_k["koppen"] == klass]
                     # Label every class for IFS (color key); other models
@@ -1268,17 +1214,15 @@ def main():
                             label=koppen_label(klass) if mname == "IFS" else "")
 
             for row in df_k.itertuples():
-                for metric, val in [("bias", row.aw_bias),
-                                     ("rmse", row.aw_rmse), ("mae", row.aw_mae)]:
+                for metric, val in [("rmse", row.aw_rmse), ("mae", row.aw_mae)]:
                     summary_rows.append({
                         "model": mname, "group": f"koppen_{row.koppen}",
                         "lead_time": int(row.lead_time), "metric": metric, "value": val,
                     })
 
-        axes[0].axhline(0, color="k", lw=0.8, ls="--")
         for ax, ylabel, title in zip(axes,
-                                     ["Bias (K)", "RMSE (K)", "MAE (K)"],
-                                     ["Mean bias", "RMSE", "MAE"]):
+                                     ["RMSE (K)", "MAE (K)"],
+                                     ["RMSE", "MAE"]):
             ax.set_xlabel("Lead time (h)"); ax.set_ylabel(ylabel)
             ax.set_title(f"Skill by Koppen class — {title}")
             ax.grid(True, alpha=0.3)
@@ -1301,7 +1245,7 @@ def main():
         plt.tight_layout()
         savefig(fig, f"{OUT}/09_koppen/skill_by_koppen.png")
 
-        # Koppen × season heatmap — IFS, per lead
+        # Koppen × season heatmap — IFS, per lead (bias shows systematic structure)
         for lead in all_leads:
             df_ks = q(f"""
                 SELECT k.category_1 AS koppen,
@@ -1314,7 +1258,7 @@ def main():
             pivot = (df_ks.pivot(index="koppen", columns="season", values="aw_bias")
                      .reindex(columns=["DJF", "MAM", "JJA", "SON"]))
             labels = [koppen_label(c) for c in pivot.index]
-            absmax = pivot.abs().max().max()
+            absmax = float(pivot.abs().max().max())
             fig, ax = plt.subplots(figsize=(10, max(4, len(labels) * 0.55 + 1)))
             im = ax.imshow(pivot.values, cmap=RDBU, vmin=-absmax, vmax=absmax, aspect="auto")
             ax.set_xticks(range(4))
