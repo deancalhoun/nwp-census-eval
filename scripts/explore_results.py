@@ -757,37 +757,6 @@ def main():
     def sec5():
         section("5  Maps (all leads)")
 
-        # — Analysis anomaly maps — plotted once, no lead dependence ──────────
-        if HAS_ANOM:
-            df_an_alltime = prep_geo(q("""
-                SELECT geo_id, AVG(an_anom * an_anom) AS an_anom_var
-                FROM ifs_anom GROUP BY geo_id
-            """))
-            vmax_an = df_an_alltime["an_anom_var"].quantile(0.98)
-            gdf_an = merge_map(df_an_alltime, "an_anom_var")
-            fig, ax = plt.subplots(figsize=(12, 6))
-            county_map(ax, gdf_an, "an_anom_var", REDS, 0, vmax_an,
-                       "Analysis anomaly variance (K^2) — all time", "AN anomaly variance (K^2)")
-            plt.tight_layout()
-            savefig(fig, f"{OUT}/05_seasonal_maps/an_anom_var_alltime.png")
-
-            df_an_seas = prep_geo(q(f"""
-                SELECT geo_id, {_season_sql()} AS season,
-                    AVG(an_anom * an_anom) AS an_anom_var
-                FROM ifs_anom GROUP BY geo_id, season
-            """))
-            vmax_an_s = df_an_seas["an_anom_var"].quantile(0.98)
-            fig, axes = plt.subplots(2, 2, figsize=(16, 9))
-            for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
-                d = df_an_seas[df_an_seas["season"] == season]
-                gdf = merge_map(d, "an_anom_var")
-                county_map(ax, gdf, "an_anom_var", REDS, 0, vmax_an_s,
-                           season, "AN anomaly variance (K^2)")
-                aw = aw_mean(d, "an_anom_var")
-                ax.set_title(f"{season}  (aw={aw:.3f} K^2)", fontsize=9)
-            fig.suptitle("Analysis anomaly variance (K^2) — seasonal", fontsize=11)
-            plt.tight_layout()
-            savefig(fig, f"{OUT}/05_seasonal_maps/an_anom_var_seasonal.png")
 
         for lead in all_leads_bias:
             # — All-time bias and MAE maps ────────────────────────────────────
@@ -817,31 +786,6 @@ def main():
                            label)
                 plt.tight_layout()
                 savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
-
-            if HAS_ANOM:
-                df_fc_anom = prep_geo(q(f"""
-                    SELECT geo_id,
-                        AVG(fc_anom * fc_anom) AS fc_anom_var,
-                        CORR(fc_anom, an_anom) AS acc
-                    FROM ifs_anom WHERE lead_time = {lead}
-                    GROUP BY geo_id
-                """))
-                vmax_fc = df_fc_anom["fc_anom_var"].quantile(0.98)
-                gdf_fc = merge_map(df_fc_anom, "fc_anom_var")
-                fig, ax = plt.subplots(figsize=(12, 6))
-                county_map(ax, gdf_fc, "fc_anom_var", REDS, 0, vmax_fc,
-                           f"IFS forecast anomaly variance (K^2) — all time, lead {lead}h",
-                           "FC anomaly variance (K^2)")
-                plt.tight_layout()
-                savefig(fig, f"{OUT}/05_seasonal_maps/ifs_fc_anom_var_alltime_lead{lead}h.png")
-
-                gdf_acc = merge_map(df_fc_anom, "acc")
-                acc_vmin = df_fc_anom["acc"].quantile(0.02)
-                fig, ax = plt.subplots(figsize=(12, 6))
-                county_map(ax, gdf_acc, "acc", "viridis", acc_vmin, 1,
-                           f"IFS per-county ACC — all time, lead {lead}h", "ACC")
-                plt.tight_layout()
-                savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_alltime_lead{lead}h.png")
 
             # — Seasonal bias and MAE maps ─────────────────────────────────────────
             df_seas = prep_geo(q(f"""
@@ -874,49 +818,70 @@ def main():
                 plt.tight_layout()
                 savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
 
-            # — Seasonal forecast anomaly and ACC maps ────────────────────────────
+            # — MSE decomposition: MSE = fc_var + an_var - 2*cov ─────────────────
+            # 5 rows (Annual + 4 seasons) x 4 cols (MSE, fc_var, an_var, 2*cov)
             if HAS_ANOM:
-                df_fc_seas = prep_geo(q(f"""
-                    SELECT geo_id,
-                        {_season_sql()} AS season,
-                        AVG(fc_anom * fc_anom) AS fc_anom_var,
-                        AVG(aland)             AS aland
-                    FROM ifs_anom WHERE lead_time = {lead}
-                    GROUP BY geo_id, season
-                """))
-                vmax_fc_s = df_fc_seas["fc_anom_var"].quantile(0.98)
-                fig, axes = plt.subplots(2, 2, figsize=(16, 9))
-                for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
-                    d = df_fc_seas[df_fc_seas["season"] == season]
-                    gdf = merge_map(d, "fc_anom_var")
-                    county_map(ax, gdf, "fc_anom_var", REDS, 0, vmax_fc_s,
-                               season, "FC anomaly variance (K^2)")
-                    aw = aw_mean(d, "fc_anom_var")
-                    ax.set_title(f"{season}  (aw={aw:.3f} K^2)", fontsize=9)
-                fig.suptitle(f"IFS forecast anomaly variance (K^2) — lead {lead}h", fontsize=11)
-                plt.tight_layout()
-                savefig(fig, f"{OUT}/05_seasonal_maps/ifs_fc_anom_var_seasonal_lead{lead}h.png")
+                def _query_decomp(where_extra=""):
+                    return prep_geo(q(f"""
+                        SELECT geo_id,
+                            AVG(bias    * bias)       AS mse,
+                            AVG(fc_anom * fc_anom)    AS fc_var,
+                            AVG(an_anom * an_anom)    AS an_var,
+                            2 * AVG(fc_anom * an_anom) AS two_cov
+                        FROM ifs_anom
+                        WHERE lead_time = {lead}{where_extra}
+                        GROUP BY geo_id
+                    """))
 
-                # Per-county ACC map (seasonal)
-                df_acc_county = q(f"""
-                    SELECT geo_id,
-                        {_season_sql()} AS season,
-                        CORR(fc_anom, an_anom) AS acc
-                    FROM ifs_anom WHERE lead_time = {lead}
-                    GROUP BY geo_id, season
-                """)
-                df_acc_county = prep_geo(df_acc_county)
-                acc_vmin = df_acc_county["acc"].quantile(0.02)
-                fig, axes = plt.subplots(2, 2, figsize=(16, 9))
-                for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
-                    d = df_acc_county[df_acc_county["season"] == season]
-                    gdf = merge_map(d, "acc")
-                    county_map(ax, gdf, "acc", "viridis", acc_vmin, 1, season, "ACC")
-                    mean_acc = d["acc"].mean()
-                    ax.set_title(f"{season}  (mean={mean_acc:.3f})", fontsize=9)
-                fig.suptitle(f"IFS per-county ACC — lead {lead}h", fontsize=11)
-                plt.tight_layout()
-                savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_county_seasonal_lead{lead}h.png")
+                row_labels = ["Annual", "DJF", "MAM", "JJA", "SON"]
+                row_data = [_query_decomp()] + [
+                    _query_decomp(f" AND {_season_sql()} = '{s}'")
+                    for s in ["DJF", "MAM", "JJA", "SON"]
+                ]
+
+                # Shared scale for the three variance columns; own scale for 2*cov
+                annual = row_data[0]
+                vmax_var = float(annual[["mse", "fc_var", "an_var"]].quantile(0.98).max())
+                cov_abs  = float(annual["two_cov"].abs().quantile(0.98))
+
+                col_specs = [
+                    ("mse",     REDS, 0,        vmax_var, "MSE (K^2)"),
+                    ("fc_var",  REDS, 0,        vmax_var, "FC variance (K^2)"),
+                    ("an_var",  REDS, 0,        vmax_var, "AN variance (K^2)"),
+                    ("two_cov", RDBU, -cov_abs, cov_abs,  "2*Cov(fc,an) (K^2)"),
+                ]
+
+                fig, axes = plt.subplots(5, 4, figsize=(20, 14), constrained_layout=True)
+                for ri, (row_label, df_row) in enumerate(zip(row_labels, row_data)):
+                    for ci, (col, cmap, vmin, vmax, cbar_lbl) in enumerate(col_specs):
+                        ax = axes[ri, ci]
+                        gdf = merge_map(df_row, col)
+                        gdf.plot(column=col, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax,
+                                 linewidth=0.05, edgecolor="black",
+                                 missing_kwds={"color": "#cccccc"})
+                        ax.set_xlim(*CONUS_XLIM)
+                        ax.set_ylim(*CONUS_YLIM)
+                        ax.axis("off")
+                        if ri == 0:
+                            ax.set_title(cbar_lbl, fontsize=9, fontweight="bold")
+                        if ci == 0:
+                            ax.annotate(row_label, xy=(-0.02, 0.5),
+                                        xycoords="axes fraction",
+                                        fontsize=9, ha="right", va="center",
+                                        fontweight="bold")
+
+                # One colorbar per column
+                for ci, (col, cmap, vmin, vmax, cbar_lbl) in enumerate(col_specs):
+                    sm = plt.cm.ScalarMappable(
+                        cmap=cmap, norm=mcolors.Normalize(vmin=vmin, vmax=vmax))
+                    sm.set_array([])
+                    fig.colorbar(sm, ax=axes[:, ci].tolist(), location="bottom",
+                                 pad=0.01, fraction=0.03, label=cbar_lbl)
+
+                fig.suptitle(
+                    f"IFS MSE decomposition: MSE = FC var + AN var - 2*Cov  |  lead {lead}h",
+                    fontsize=12)
+                savefig(fig, f"{OUT}/05_seasonal_maps/ifs_mse_decomp_lead{lead}h.png")
 
     if not args.skip_maps:
         try_section("5", sec5)
