@@ -4,17 +4,17 @@ explore_results.py — Comprehensive exploratory analysis of NWP 2m temperature 
 
 Sections
 --------
-  §1  Skill by lead time (IFS)
-  §2  IFS vs AIFS comparison (common period only)
-  §3  Monthly timeseries — bias, MAE, ACC
-  §4  Seasonal cycle by lead time (one line per lead)
-  §5  Seasonal maps — bias, MAE, forecast/analysis anomalies
-  §6  Bias and error histograms
-  §7  Koppen-Geiger climate region interactions
-  §8  Demographic interactions (census)
-  §9  Summary table (CSV)
-  §10 MSE decomposition maps (3×3 panel, bias sign × anomaly sign)
-  §11 Joint PDF — observed anomaly vs forecast bias
+  1  Skill by lead time (IFS)
+  2  IFS vs AIFS comparison (common period only)
+  3  Monthly timeseries — bias, MAE, ACC
+  4  Seasonal cycle by lead time (one line per lead)
+  5  Seasonal maps — bias, MAE, forecast/analysis anomalies
+  6  Bias and error histograms
+  7  Koppen-Geiger climate region interactions
+  8  Demographic interactions (census)
+  9  Summary table (CSV)
+  10 MSE decomposition maps (3×3 panel, bias sign × anomaly sign)
+  11 Joint PDF — observed anomaly vs forecast bias
 
 All spatial means are area-weighted using the `aland` column embedded in
 every bias/anom parquet.  ACC is pooled across counties and dates (fast
@@ -74,7 +74,7 @@ MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 RDBU      = "RdBu_r"
 REDS      = "YlOrRd"
-PDF_BIN_K = 0.5   # bin width (K) for §11 joint PDF
+PDF_BIN_K = 0.5   # bin width (K) for 11 joint PDF
 
 # Beck et al. (2018) 30-class Koppen-Geiger integer codes
 KOPPEN_NAMES = {
@@ -180,7 +180,7 @@ def parse_args():
     p.add_argument("--leads", default=None,
                    help="Comma-separated lead times to process, e.g. 24,48,72 (default: all)")
     p.add_argument("--skip-maps", action="store_true",
-                   help="Skip choropleth map sections (§5, §6 bias maps, §10) — much faster")
+                   help="Skip choropleth map sections (5, 6 bias maps, 10) — much faster")
     p.add_argument("--include-off-cycle", action="store_true",
                    help="Include 6z/18z init times (excluded by default — they have extra "
                         "observations assimilated and are not comparable to 0z/12z)")
@@ -231,7 +231,7 @@ def main():
     def q(sql):
         return db.query(sql)
 
-    # All available lead times — computed once, reused by §5–§8, §10, §11
+    # All available lead times — computed once, reused by 5–8, 10, 11
     all_leads_bias = sorted(
         q("SELECT DISTINCT lead_time FROM ifs_bias ORDER BY lead_time")["lead_time"].tolist()
     )
@@ -258,10 +258,10 @@ def main():
     summary_rows = []
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §1  Skill by lead time — IFS
+    # 1  Skill by lead time — IFS
     # ══════════════════════════════════════════════════════════════════════════
     def sec1():
-        section("§1  Skill by lead time — IFS")
+        section("1  Skill by lead time — IFS")
         df = q("""
             SELECT lead_time,
                 SUM(bias       * aland) / SUM(aland)              AS aw_bias,
@@ -319,16 +319,16 @@ def main():
         for lt, row in key.iterrows():
             print(f"  {lt:>5}h  {row['aw_bias']:>+8.3f}  {row['aw_rmse']:>8.3f}  {row['aw_mae']:>8.3f}")
 
-    try_section("§1", sec1)
+    try_section("1", sec1)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §2  IFS vs AIFS comparison — common period
+    # 2  IFS vs AIFS comparison — common period
     # ══════════════════════════════════════════════════════════════════════════
     def sec2():
         if not HAS_VS:
             print("  Skipped — ifs_vs_aifs view not registered")
             return
-        section("§2  IFS vs AIFS comparison (common period)")
+        section("2  IFS vs AIFS comparison (common period)")
 
         df = q("""
             SELECT lead_time,
@@ -390,13 +390,13 @@ def main():
             plt.tight_layout()
             savefig(fig, f"{OUT}/02_model_comparison/ifs_vs_aifs_acc.png")
 
-    try_section("§2", sec2)
+    try_section("2", sec2)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §3  Monthly timeseries — bias, MAE, ACC
+    # 3  Monthly timeseries — bias, MAE, ACC
     # ══════════════════════════════════════════════════════════════════════════
     def sec3():
-        section("§3  Timeseries (daily + 30-day moving average)")
+        section("3  Timeseries (daily + 30-day moving average)")
 
         MA = 30  # rolling window in days
 
@@ -489,13 +489,13 @@ def main():
         plt.tight_layout()
         savefig(fig, f"{OUT}/03_timeseries/ifs_daily_bias_by_lead.png")
 
-    try_section("§3", sec3)
+    try_section("3", sec3)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §4  Month × lead time heatmaps
+    # 4  Month × lead time heatmaps
     # ══════════════════════════════════════════════════════════════════════════
     def sec4():
-        section("§4  Seasonal cycle — lead × time heatmaps and contour plots")
+        section("4  Seasonal cycle — lead × time heatmaps and contour plots")
         df = q("""
             SELECT MONTH(valid_time) AS month,
                 lead_time,
@@ -749,13 +749,13 @@ def main():
             plt.tight_layout()
             savefig(fig, f"{OUT}/04_seasonal_cycle/ifs_acc_lead_x_time.png")
 
-    try_section("§4", sec4)
+    try_section("4", sec4)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §5  Seasonal maps
+    # 5  Seasonal maps
     # ══════════════════════════════════════════════════════════════════════════
     def sec5():
-        section("§5  Maps (all leads)")
+        section("5  Maps (all leads)")
 
         for lead in all_leads_bias:
             # — All-time average maps ─────────────────────────────────────────────
@@ -903,15 +903,15 @@ def main():
                 savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_county_seasonal_lead{lead}h.png")
 
     if not args.skip_maps:
-        try_section("§5", sec5)
+        try_section("5", sec5)
     else:
-        print("  §5 skipped (--skip-maps)")
+        print("  5 skipped (--skip-maps)")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §6  Histograms
+    # 6  Histograms
     # ══════════════════════════════════════════════════════════════════════════
     def sec6():
-        section("§6  Histograms")
+        section("6  Histograms")
         HIST_LEADS = [lt for lt in [24, 72, 120, 240] if lt in all_leads_bias]
 
         df_hist = q(f"""
@@ -996,16 +996,16 @@ def main():
             plt.tight_layout()
             savefig(fig, f"{OUT}/06_histograms/ifs_lead{lead}h_mean_bias_map.png")
 
-    try_section("§6", sec6)
+    try_section("6", sec6)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §7  Koppen-Geiger climate region interactions
+    # 7  Koppen-Geiger climate region interactions
     # ══════════════════════════════════════════════════════════════════════════
     def sec7():
         if not HAS_KOPPEN:
             print("  Skipped — koppen view not registered")
             return
-        section("§7  Koppen-Geiger climate region interactions")
+        section("7  Koppen-Geiger climate region interactions")
 
         df_kop = q("""
             SELECT k.category_1 AS koppen, b.lead_time,
@@ -1084,10 +1084,10 @@ def main():
                 "aw_mae": row["aw_mae"],
             })
 
-    try_section("§7", sec7)
+    try_section("7", sec7)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §8  Demographic interactions
+    # 8  Demographic interactions
     # ══════════════════════════════════════════════════════════════════════════
     def sec8():
         model_input = os.path.join(
@@ -1096,7 +1096,7 @@ def main():
         if not os.path.exists(model_input):
             print(f"  Skipped — {model_input} not found (run notebook 03 first)")
             return
-        section("§8  Demographic interactions")
+        section("8  Demographic interactions")
 
         df_mi  = pd.read_parquet(model_input)
         demo_cols = [c for c in df_mi.columns if c.startswith("demo_")]
@@ -1168,16 +1168,16 @@ def main():
                 if abs(r) > 0.1:
                     print(f"    {name.replace('demo_',''):30s}  r = {r:+.3f}")
 
-    try_section("§8", sec8)
+    try_section("8", sec8)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §10  MSE decomposition maps (3×3 panel — bias sign × anomaly sign)
+    # 10  MSE decomposition maps (3×3 panel — bias sign × anomaly sign)
     # ══════════════════════════════════════════════════════════════════════════
     def sec10():
         if not HAS_ANOM:
             print("  Skipped — ifs_anom view not registered")
             return
-        section("§10  MSE decomposition maps")
+        section("10  MSE decomposition maps")
 
         all_leads_anom = sorted(
             q("SELECT DISTINCT lead_time FROM ifs_anom ORDER BY lead_time")["lead_time"].tolist()
@@ -1235,18 +1235,18 @@ def main():
                            f"{OUT}/10_mse_decomp/ifs_mse9_{season}_lead{lead}h.png", vmax)
 
     if not args.skip_maps:
-        try_section("§10", sec10)
+        try_section("10", sec10)
     else:
-        print("  §10 skipped (--skip-maps)")
+        print("  10 skipped (--skip-maps)")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §11  Joint PDF — observed anomaly vs forecast bias
+    # 11  Joint PDF — observed anomaly vs forecast bias
     # ══════════════════════════════════════════════════════════════════════════
     def sec11():
         if not HAS_ANOM:
             print("  Skipped — ifs_anom view not registered")
             return
-        section("§11  Joint PDF — anomaly vs bias")
+        section("11  Joint PDF — anomaly vs bias")
 
         all_leads_anom = sorted(
             q("SELECT DISTINCT lead_time FROM ifs_anom ORDER BY lead_time")["lead_time"].tolist()
@@ -1350,12 +1350,12 @@ def main():
             plt.tight_layout()
             savefig(fig, f"{OUT}/11_joint_pdf/ifs_joint_pdf_seasonal_lead{lead}h.png")
 
-    try_section("§11", sec11)
+    try_section("11", sec11)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # §9  Summary table
+    # 9  Summary table
     # ══════════════════════════════════════════════════════════════════════════
-    section("§9  Summary")
+    section("9  Summary")
     if summary_rows:
         df_sum = pd.DataFrame(summary_rows)
         out_csv = f"{OUT}/summary.csv"
