@@ -659,8 +659,9 @@ def main():
                     savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
 
                 gdf_acc = merge_map(df_all_anom, "acc")
+                acc_vmin = df_all_anom["acc"].quantile(0.02)
                 fig, ax = plt.subplots(figsize=(12, 6))
-                county_map(ax, gdf_acc, "acc", "viridis", 0, 1,
+                county_map(ax, gdf_acc, "acc", "viridis", acc_vmin, 1,
                            f"IFS per-county ACC — all time, lead {lead}h", "ACC")
                 plt.tight_layout()
                 savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_alltime_lead{lead}h.png")
@@ -736,11 +737,12 @@ def main():
                     GROUP BY geo_id, season
                 """)
                 df_acc_county = prep_geo(df_acc_county)
+                acc_vmin = df_acc_county["acc"].quantile(0.02)
                 fig, axes = plt.subplots(2, 2, figsize=(16, 9))
                 for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
                     d = df_acc_county[df_acc_county["season"] == season]
                     gdf = merge_map(d, "acc")
-                    county_map(ax, gdf, "acc", "viridis", 0, 1, season, "ACC")
+                    county_map(ax, gdf, "acc", "viridis", acc_vmin, 1, season, "ACC")
                     mean_acc = d["acc"].mean()
                     ax.set_title(f"{season}  (mean={mean_acc:.3f})", fontsize=9)
                 fig.suptitle(f"IFS per-county ACC — lead {lead}h", fontsize=11)
