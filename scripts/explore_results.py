@@ -60,7 +60,6 @@ import warnings
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.cm as mcm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -459,7 +458,7 @@ def main():
             """)
             seasons = ["DJF", "MAM", "JJA", "SON"]
             fig, axes2 = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
-            cmap_s = mcm.get_cmap("tab10", 4)
+            cmap_s = matplotlib.colormaps["tab10"].resampled(4)
             for ax, col, ylabel in zip(axes2,
                                        ["aw_bias", "aw_rmse", "aw_mae"],
                                        ["Bias (K)", "RMSE (K)", "MAE (K)"]):
@@ -544,7 +543,7 @@ def main():
                 GROUP BY day, lead_time ORDER BY day, lead_time
             """)
             df_lt["day"] = pd.to_datetime(df_lt["day"])
-            cmap_lt = mcm.get_cmap("plasma", len(KEY_LEADS))
+            cmap_lt = matplotlib.colormaps["plasma"].resampled(len(KEY_LEADS))
             fig, ax = plt.subplots(figsize=(14, 4))
             for i, lt in enumerate(KEY_LEADS):
                 d = df_lt[df_lt["lead_time"] == lt].sort_values("day")
@@ -1178,7 +1177,7 @@ def main():
                 WHERE lead_time IN ({",".join(str(l) for l in KEY_LEADS)})
                 GROUP BY lead_time, geo_id
             """)
-            cmap_lt = mcm.get_cmap("plasma", len(KEY_LEADS))
+            cmap_lt = matplotlib.colormaps["plasma"].resampled(len(KEY_LEADS))
             ls = MODEL_LS[mname]
             for i, lt in enumerate(KEY_LEADS):
                 d = df[df["lead_time"] == lt]
@@ -1255,7 +1254,7 @@ def main():
                 continue
             if classes is None:
                 classes = sorted(df_k["koppen"].dropna().unique())
-            cmap_k = mcm.get_cmap("tab10", len(classes))
+            cmap_k = matplotlib.colormaps["tab10"].resampled(len(classes))
 
             for ax, col_name, ylabel in zip(axes,
                                             ["aw_bias", "aw_rmse", "aw_mae"],
@@ -1366,7 +1365,7 @@ def main():
         order = df_corr.abs().max().sort_values(ascending=False).index.tolist()
         top8  = order[:8]
 
-        cmap_d = mcm.get_cmap("tab10", len(top8))
+        cmap_d = matplotlib.colormaps["tab10"].resampled(len(top8))
         fig, ax = plt.subplots(figsize=(12, 5))
         for i, dc in enumerate(top8):
             ax.plot(df_corr.index, df_corr[dc], "o-", ms=3, lw=1.3,
