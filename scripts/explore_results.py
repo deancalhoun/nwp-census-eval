@@ -260,6 +260,9 @@ def main():
         return db.query(sql)
 
     # ── Off-cycle filter (shadows views in-place) ─────────────────────────
+    # duckdb_views().sql returns the full DDL ("CREATE VIEW name AS <query>").
+    # We need only the inner <query> part to use it as a subquery.
+    import re as _re
     if not args.include_off_cycle:
         for v in ["ifs_bias", "ifs_anom", "aifs_bias", "aifs_anom"]:
             if v not in views:
@@ -268,9 +271,13 @@ def main():
                 f"SELECT sql FROM duckdb_views() WHERE view_name = '{v}'"
             ).fetchone()
             if orig:
+                ddl = orig[0]
+                # Strip "CREATE [OR REPLACE] VIEW name AS " to get just the query
+                m = _re.search(r"\bVIEW\s+\S+\s+AS\b", ddl, _re.IGNORECASE)
+                inner = ddl[m.end():].strip() if m else ddl
                 db._conn.execute(
                     f"CREATE OR REPLACE VIEW {v} AS "
-                    f"SELECT * FROM ({orig[0]}) _t "
+                    f"SELECT * FROM ({inner}) _t "
                     f"WHERE HOUR(init_time) NOT IN (6, 18)"
                 )
         print("  Off-cycle 6z/18z excluded (pass --include-off-cycle to override)")
