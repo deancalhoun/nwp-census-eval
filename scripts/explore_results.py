@@ -333,6 +333,17 @@ def main():
                 int(x.strip()) for x in args.leads.split(",")
             ))
 
+    # Off-cycle: also drop 6h and 18h lead times — they are ambiguous with
+    # the init-time cycle convention and clutter all aggregate plots.
+    if not args.include_off_cycle:
+        all_leads      = [l for l in all_leads      if l not in (6, 18)]
+        all_leads_anom = [l for l in all_leads_anom if l not in (6, 18)]
+        print(f"  Off-cycle lead filter: 6h/18h removed  →  leads={all_leads}")
+
+    # SQL IN-list snippets for use in aggregate queries (so --leads is respected)
+    leads_sql      = ", ".join(str(l) for l in all_leads)      if all_leads      else "NULL"
+    leads_anom_sql = ", ".join(str(l) for l in all_leads_anom) if all_leads_anom else "NULL"
+
     # ── Load shapefile once ───────────────────────────────────────────────
     print("Loading county shapefile …")
     gdf_base = (
@@ -368,6 +379,7 @@ def main():
                     SQRT(SUM(bias*bias*aland)/SUM(aland))   AS aw_rmse,
                     SUM(abs_error*aland)/SUM(aland)         AS aw_mae
                 FROM {bv}
+                WHERE lead_time IN ({leads_sql})
                 GROUP BY lead_time ORDER BY lead_time
             """)
             ax_bias.plot(df_b["lead_time"], df_b["aw_bias"], **kw)
@@ -394,6 +406,7 @@ def main():
                         {_wa_skill()} AS aw_skill,
                         {_wa_acc()}   AS aw_acc
                     FROM {av}
+                    WHERE lead_time IN ({leads_anom_sql})
                     GROUP BY lead_time ORDER BY lead_time
                 """)
                 ax_skill.plot(df_a["lead_time"], df_a["aw_skill"], **kw)
@@ -441,6 +454,7 @@ def main():
                     SQRT(SUM(bias*bias*aland)/SUM(aland))   AS aw_rmse,
                     SUM(abs_error*aland)/SUM(aland)         AS aw_mae
                 FROM {bv}
+                WHERE lead_time IN ({leads_sql})
                 GROUP BY season, lead_time ORDER BY season, lead_time
             """)
             seasons = ["DJF", "MAM", "JJA", "SON"]
@@ -561,6 +575,7 @@ def main():
                     SUM(bias*aland)/SUM(aland)      AS aw_bias,
                     SUM(abs_error*aland)/SUM(aland) AS aw_mae
                 FROM {bias_view}
+                WHERE lead_time IN ({leads_sql})
                 GROUP BY month, lead_time ORDER BY month, lead_time
             """)
             if df.empty:
@@ -618,6 +633,7 @@ def main():
                         {_wa_acc()} AS aw_acc,
                         {_wa_skill()} AS aw_skill
                     FROM {anom_view}
+                    WHERE lead_time IN ({leads_anom_sql})
                     GROUP BY month, lead_time ORDER BY month, lead_time
                 """)
                 if df_a.empty:
@@ -654,13 +670,14 @@ def main():
             _monthly(bv, av, mname)
 
         # DOY × lead heatmap — IFS only
-        df_doy = q("""
+        df_doy = q(f"""
             SELECT dayofyear(MAKE_DATE(2001, MONTH(valid_time), DAY(valid_time))) AS doy,
                 lead_time,
                 SUM(bias*aland)/SUM(aland)      AS aw_bias,
                 SUM(abs_error*aland)/SUM(aland) AS aw_mae
             FROM ifs_bias
             WHERE NOT (MONTH(valid_time) = 2 AND DAY(valid_time) = 29)
+              AND lead_time IN ({leads_sql})
             GROUP BY doy, lead_time ORDER BY doy, lead_time
         """)
         leads_doy = sorted(df_doy["lead_time"].unique())
@@ -700,6 +717,7 @@ def main():
                     {_skill_sql} AS aw_skill
                 FROM ifs_anom
                 WHERE NOT (MONTH(valid_time) = 2 AND DAY(valid_time) = 29)
+                  AND lead_time IN ({leads_anom_sql})
                 GROUP BY doy, lead_time ORDER BY doy, lead_time
             """)
             for col, lbl, fname_suffix in [
@@ -725,11 +743,12 @@ def main():
                 savefig(fig, f"{OUT}/03_seasonal_cycle/ifs_{fname_suffix}_lead_x_doy.png")
 
         # Hovmöller: lead (x) × monthly valid time (y) — IFS
-        df_hov = q("""
+        df_hov = q(f"""
             SELECT DATE_TRUNC('month', valid_time) AS mdate, lead_time,
                 SUM(bias*aland)/SUM(aland)      AS aw_bias,
                 SUM(abs_error*aland)/SUM(aland) AS aw_mae
             FROM ifs_bias
+            WHERE lead_time IN ({leads_sql})
             GROUP BY mdate, lead_time ORDER BY mdate, lead_time
         """)
         df_hov["mdate"] = pd.to_datetime(df_hov["mdate"])
@@ -1123,18 +1142,19 @@ def main():
                 nonempty = [p for p in pivots_s.values() if not p.empty]
                 seas_vmax = max((float(p.values.max()) for p in nonempty), default=1e-3)
                 seas_norm = mcolors.LogNorm(vmin=1e-4, vmax=max(seas_vmax, 1e-3))
-                fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+                fig, axes = plt.subplots(2, 2, figsize=(12, 10),
+                                         constrained_layout=True)
                 last_im = None
                 for ax, s in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
                     im = _draw(ax, pivots_s[s], s, seas_norm)
-                    if im:
+                    if im is not None:
                         last_im = im
                 fig.suptitle(
                     f"{mname} — joint PDF by season, lead {lead}h", fontsize=11)
-                if last_im:
+                if last_im is not None:
                     fig.colorbar(last_im, ax=axes.ravel().tolist(),
-                                 label="Area-weighted density", shrink=0.6)
-                plt.tight_layout()
+                                 location="right", shrink=0.6,
+                                 label="Area-weighted density")
                 savefig(fig, f"{OUT}/07_joint_pdf/{mname.lower()}_joint_pdf_seasonal_lead{lead}h.png")
 
     try_section("7", sec7)
@@ -1227,6 +1247,7 @@ def main():
                     SQRT(SUM(b.bias*b.bias*b.aland)/SUM(b.aland)) AS aw_rmse,
                     SUM(b.abs_error*b.aland)/SUM(b.aland)         AS aw_mae
                 FROM {bv} b JOIN koppen k ON b.geo_id = k.geo_id
+                WHERE b.lead_time IN ({leads_sql})
                 GROUP BY k.category_1, b.lead_time
                 ORDER BY k.category_1, b.lead_time
             """)
