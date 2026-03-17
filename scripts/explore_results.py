@@ -529,18 +529,18 @@ def main():
                 SUM(bias      * aland) / SUM(aland) AS aw_bias,
                 SUM(abs_error * aland) / SUM(aland) AS aw_mae
             FROM ifs_bias
+            WHERE DAY_OF_YEAR(valid_time) < 366
             GROUP BY DAY_OF_YEAR(valid_time), lead_time
             ORDER BY doy, lead_time
         """)
-        doys = list(range(1, 367))
+        doys = list(range(1, 366))
 
         for col, cmap, label, fname, diverging in [
             ("aw_bias", RDBU, "Bias (K)", "ifs_bias_doy_x_lead.png",  True),
             ("aw_mae",  REDS, "MAE (K)",  "ifs_mae_doy_x_lead.png",   False),
         ]:
             pivot = (df_doy.pivot(index="lead_time", columns="doy", values=col)
-                     .reindex(index=leads, columns=doys)
-                     .interpolate(axis=1, limit_direction="both"))
+                     .reindex(index=leads, columns=doys))
             absmax = pivot.abs().max().max()
             vmin = -absmax if diverging else pivot.min().min()
             vmax =  absmax if diverging else pivot.max().max()
@@ -570,12 +570,12 @@ def main():
                     lead_time,
                     CORR(fc_anom, an_anom) AS acc
                 FROM ifs_anom
+                WHERE DAY_OF_YEAR(valid_time) < 366
                 GROUP BY DAY_OF_YEAR(valid_time), lead_time
                 ORDER BY doy, lead_time
             """)
             pivot_acc_doy = (df_acc_doy.pivot(index="lead_time", columns="doy", values="acc")
-                             .reindex(index=leads, columns=doys)
-                             .interpolate(axis=1, limit_direction="both"))
+                             .reindex(index=leads, columns=doys))
             acc_min = pivot_acc_doy.min().min()
             levels_acc = np.linspace(acc_min, 1, 15)
 
