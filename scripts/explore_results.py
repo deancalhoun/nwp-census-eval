@@ -22,7 +22,7 @@ first-order estimate); per-county ACC maps are in the seasonal anomaly section.
 
 Usage
 -----
-    python scripts/explore_results.py [--out-dir PATH]
+    python scripts/explore_results.py [--out-dir PATH] [--leads 24,48,72] [--skip-maps]
 
 Outputs
 -------
@@ -176,6 +176,10 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out-dir", default="figures/explore",
                    help="Output root (default: figures/explore)")
+    p.add_argument("--leads", default=None,
+                   help="Comma-separated lead times to process, e.g. 24,48,72 (default: all)")
+    p.add_argument("--skip-maps", action="store_true",
+                   help="Skip choropleth map sections (§5, §6 bias maps, §10) — much faster")
     return p.parse_args()
 
 
@@ -207,6 +211,13 @@ def main():
     all_leads_bias = sorted(
         q("SELECT DISTINCT lead_time FROM ifs_bias ORDER BY lead_time")["lead_time"].tolist()
     )
+    if args.leads is not None:
+        requested = [int(x.strip()) for x in args.leads.split(",")]
+        unknown = sorted(set(requested) - set(all_leads_bias))
+        if unknown:
+            print(f"  WARNING: requested leads not in data: {unknown}")
+        all_leads_bias = sorted(set(requested) & set(all_leads_bias))
+        print(f"  Lead filter applied — using: {all_leads_bias}")
     lead_default = 24 if 24 in all_leads_bias else (all_leads_bias[0] if all_leads_bias else 24)
 
     # ── Load shapefile once ───────────────────────────────────────────────────
@@ -749,7 +760,10 @@ def main():
                 plt.tight_layout()
                 savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_county_seasonal_lead{lead}h.png")
 
-    try_section("§5", sec5)
+    if not args.skip_maps:
+        try_section("§5", sec5)
+    else:
+        print("  §5 skipped (--skip-maps)")
 
     # ══════════════════════════════════════════════════════════════════════════
     # §6  Histograms
@@ -815,6 +829,8 @@ def main():
             savefig(fig, f"{OUT}/06_histograms/ifs_seasonal_hist_lead{lead}h.png")
 
         # Bias distribution map — loop over all leads
+        if args.skip_maps:
+            return
         for lead in all_leads_bias:
             if lead in HIST_LEADS:
                 d_lead = df_hist[df_hist["lead_time"] == lead]
@@ -1076,7 +1092,10 @@ def main():
                 _plot_mse9(df_seas, season, lead,
                            f"{OUT}/10_mse_decomp/ifs_mse9_{season}_lead{lead}h.png", vmax)
 
-    try_section("§10", sec10)
+    if not args.skip_maps:
+        try_section("§10", sec10)
+    else:
+        print("  §10 skipped (--skip-maps)")
 
     # ══════════════════════════════════════════════════════════════════════════
     # §11  Joint PDF — observed anomaly vs forecast bias
