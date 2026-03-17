@@ -273,9 +273,10 @@ def main():
             ).fetchone()
             if orig:
                 ddl = orig[0]
-                # Strip "CREATE [OR REPLACE] VIEW name AS " to get just the query
+                # Strip "CREATE [OR REPLACE] VIEW name AS " and trailing semicolon
                 m = _re.search(r"\bVIEW\s+\S+\s+AS\b", ddl, _re.IGNORECASE)
                 inner = ddl[m.end():].strip() if m else ddl
+                inner = inner.rstrip(";").strip()
                 db._conn.execute(
                     f"CREATE OR REPLACE VIEW {v} AS "
                     f"SELECT * FROM ({inner}) _t "
