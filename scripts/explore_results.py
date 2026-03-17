@@ -23,6 +23,7 @@ first-order estimate); per-county ACC maps are in the seasonal anomaly section.
 Usage
 -----
     python scripts/explore_results.py [--out-dir PATH] [--leads 24,48,72] [--skip-maps]
+                                      [--include-off-cycle]
 
 Outputs
 -------
@@ -180,6 +181,9 @@ def parse_args():
                    help="Comma-separated lead times to process, e.g. 24,48,72 (default: all)")
     p.add_argument("--skip-maps", action="store_true",
                    help="Skip choropleth map sections (§5, §6 bias maps, §10) — much faster")
+    p.add_argument("--include-off-cycle", action="store_true",
+                   help="Include 6z/18z init times (excluded by default — they have extra "
+                        "observations assimilated and are not comparable to 0z/12z)")
     return p.parse_args()
 
 
@@ -203,6 +207,26 @@ def main():
     HAS_AIFS_ANOM = "aifs_anom"   in views
     HAS_VS        = "ifs_vs_aifs" in views
     HAS_KOPPEN    = "koppen"      in views
+
+    # Filter out 6z/18z init times unless explicitly requested.
+    # These forecasts have additional observations assimilated and are not
+    # directly comparable to the 0z/12z main-cycle runs.
+    if not args.include_off_cycle:
+        off_cycle_views = [v for v in
+                           ["ifs_bias", "ifs_anom", "aifs_bias", "aifs_anom", "ifs_vs_aifs"]
+                           if v in views]
+        for view in off_cycle_views:
+            orig_sql = db._conn.execute(
+                f"SELECT sql FROM duckdb_views() WHERE view_name = '{view}'"
+            ).fetchone()
+            if orig_sql:
+                db._conn.execute(
+                    f"CREATE OR REPLACE VIEW {view} AS "
+                    f"SELECT * FROM ({orig_sql[0]}) _t "
+                    f"WHERE HOUR(init_time) NOT IN (6, 18)"
+                )
+        print(f"  Off-cycle (6z/18z) excluded from: {off_cycle_views}  "
+              f"(pass --include-off-cycle to override)")
 
     def q(sql):
         return db.query(sql)
