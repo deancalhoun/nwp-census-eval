@@ -124,7 +124,7 @@ def savefig(fig, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"    → {path}")
+    print(f"    {path}")
 
 
 def county_map(ax, gdf, col, cmap, vmin, vmax, title, cbar_label):
@@ -1360,7 +1360,7 @@ def main():
         df_sum = pd.DataFrame(summary_rows)
         out_csv = f"{OUT}/summary.csv"
         df_sum.to_csv(out_csv, index=False, float_format="%.4f")
-        print(f"  Saved {len(df_sum):,} rows → {out_csv}")
+        print(f"  Saved {len(df_sum):,} rows to {out_csv}")
 
     db.close()
     print(f"\nDone.  All figures in: {OUT}/")
