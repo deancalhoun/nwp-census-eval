@@ -261,28 +261,25 @@ def main():
         return db.query(sql)
 
     # ── Off-cycle filter (shadows views in-place) ─────────────────────────
-    # duckdb_views().sql returns the full DDL ("CREATE VIEW name AS <query>").
-    # We need only the inner <query> part to use it as a subquery.
-    import re as _re
+    # Rebuild the view directly from the known parquet path — avoids any
+    # DDL-parsing fragility (trailing semicolons, quoting, etc.).
     if not args.include_off_cycle:
+        from nwp_census_eval.db import _VIEWS as _DB_VIEWS
+        filtered = []
         for v in ["ifs_bias", "ifs_anom", "aifs_bias", "aifs_anom"]:
-            if v not in views:
+            if v not in views or v not in _DB_VIEWS:
                 continue
-            orig = db._conn.execute(
-                f"SELECT sql FROM duckdb_views() WHERE view_name = '{v}'"
-            ).fetchone()
-            if orig:
-                ddl = orig[0]
-                # Strip "CREATE [OR REPLACE] VIEW name AS " and trailing semicolon
-                m = _re.search(r"\bVIEW\s+\S+\s+AS\b", ddl, _re.IGNORECASE)
-                inner = ddl[m.end():].strip() if m else ddl
-                inner = inner.rstrip(";").strip()
-                db._conn.execute(
-                    f"CREATE OR REPLACE VIEW {v} AS "
-                    f"SELECT * FROM ({inner}) _t "
-                    f"WHERE HOUR(init_time) NOT IN (6, 18)"
-                )
-        print("  Off-cycle 6z/18z excluded (pass --include-off-cycle to override)")
+            path = os.path.join(db._dir, _DB_VIEWS[v])
+            if not os.path.exists(path):
+                continue
+            db._conn.execute(
+                f"CREATE OR REPLACE VIEW {v} AS "
+                f"SELECT * FROM read_parquet('{path}') "
+                f"WHERE HOUR(init_time) NOT IN (6, 18)"
+            )
+            filtered.append(v)
+        print(f"  Off-cycle 6z/18z excluded from: {filtered}"
+              f"  (pass --include-off-cycle to override)")
 
     # ── Build MODELS list ─────────────────────────────────────────────────
     # Each entry: (display_name, bias_view, anom_view_or_None)
