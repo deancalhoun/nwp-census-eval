@@ -508,6 +508,39 @@ def main():
             plt.tight_layout()
             savefig(fig, f"{OUT}/04_seasonal_cycle/{fname}")
 
+        # — Month × lead contour plots ────────────────────────────────────────
+        # Use month centres (0.5, 1.5, … 11.5) so contourf interpolates through
+        # the cell midpoints rather than starting/ending at edges.
+        month_centres = [m - 0.5 for m in months]
+        lead_indices  = list(range(len(leads)))
+        X_m, Y_m = np.meshgrid(month_centres, lead_indices)
+
+        for col, cmap, label, fname, diverging in [
+            ("aw_bias", RDBU, "Bias (K)", "ifs_bias_month_x_lead_contour.png",  True),
+            ("aw_mae",  REDS, "MAE (K)",  "ifs_mae_month_x_lead_contour.png",   False),
+        ]:
+            pivot = (df.pivot(index="lead_time", columns="month", values=col)
+                     .reindex(index=leads, columns=months))
+            absmax = pivot.abs().max().max()
+            vmin = -absmax if diverging else pivot.min().min()
+            vmax =  absmax if diverging else pivot.max().max()
+            levels = np.linspace(vmin, vmax, 15)
+
+            fig, ax = plt.subplots(figsize=(13, 5))
+            cf = ax.contourf(X_m, Y_m, pivot.values, levels=levels, cmap=cmap, extend="both")
+            ax.contour(X_m, Y_m, pivot.values, levels=levels,
+                       colors="k", linewidths=0.3, alpha=0.4)
+            ax.set_xticks(range(12))
+            ax.set_xticklabels(MONTH_LABELS)
+            ax.set_yticks(lead_indices)
+            ax.set_yticklabels([f"{lt}h" for lt in leads])
+            ax.set_xlabel("Month")
+            ax.set_ylabel("Lead time")
+            ax.set_title(f"IFS — area-weighted {label} by month × lead time")
+            plt.colorbar(cf, ax=ax, label=label)
+            plt.tight_layout()
+            savefig(fig, f"{OUT}/04_seasonal_cycle/{fname}")
+
         if HAS_ANOM:
             df_acc_ml = q("""
                 SELECT MONTH(valid_time) AS month,
@@ -532,6 +565,25 @@ def main():
             plt.colorbar(im, ax=ax, label="ACC")
             plt.tight_layout()
             savefig(fig, f"{OUT}/04_seasonal_cycle/ifs_acc_month_x_lead.png")
+
+            # ACC contour
+            acc_min = pivot_acc.min().min()
+            levels_acc = np.linspace(acc_min, 1, 15)
+            fig, ax = plt.subplots(figsize=(13, 5))
+            cf = ax.contourf(X_m, Y_m, pivot_acc.values, levels=levels_acc,
+                             cmap="viridis", extend="both")
+            ax.contour(X_m, Y_m, pivot_acc.values, levels=levels_acc,
+                       colors="k", linewidths=0.3, alpha=0.4)
+            ax.set_xticks(range(12))
+            ax.set_xticklabels(MONTH_LABELS)
+            ax.set_yticks(lead_indices)
+            ax.set_yticklabels([f"{lt}h" for lt in leads])
+            ax.set_xlabel("Month")
+            ax.set_ylabel("Lead time")
+            ax.set_title("IFS — ACC (pooled) by month × lead time")
+            plt.colorbar(cf, ax=ax, label="ACC")
+            plt.tight_layout()
+            savefig(fig, f"{OUT}/04_seasonal_cycle/ifs_acc_month_x_lead_contour.png")
 
         # — Day-of-year × lead heatmaps ──────────────────────────────────────
         df_doy = q("""
