@@ -13,6 +13,8 @@ Sections
   §7  Koppen-Geiger climate region interactions
   §8  Demographic interactions (census)
   §9  Summary table (CSV)
+  §10 MSE decomposition maps (3×3 panel, bias sign × anomaly sign)
+  §11 Joint PDF — observed anomaly vs forecast bias
 
 All spatial means are area-weighted using the `aland` column embedded in
 every bias/anom parquet.  ACC is pooled across counties and dates (fast
@@ -20,7 +22,7 @@ first-order estimate); per-county ACC maps are in the seasonal anomaly section.
 
 Usage
 -----
-    python scripts/explore_results.py [--out-dir PATH] [--map-lead N]
+    python scripts/explore_results.py [--out-dir PATH]
 
 Outputs
 -------
@@ -33,6 +35,8 @@ Outputs
         06_histograms/
         07_climate_regions/
         08_demographics/
+        10_mse_decomp/
+        11_joint_pdf/
         summary.csv
 """
 
@@ -67,8 +71,9 @@ CONUS_XLIM = (-125, -66.5)
 CONUS_YLIM = (24.5, 49.5)
 MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-RDBU   = "RdBu_r"
-REDS   = "YlOrRd"
+RDBU      = "RdBu_r"
+REDS      = "YlOrRd"
+PDF_BIN_K = 0.5   # bin width (K) for §11 joint PDF
 
 # Beck et al. (2018) 30-class Koppen-Geiger integer codes
 KOPPEN_NAMES = {
@@ -171,8 +176,6 @@ def parse_args():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out-dir", default="figures/explore",
                    help="Output root (default: figures/explore)")
-    p.add_argument("--map-lead", type=int, default=24,
-                   help="Lead time (h) for spatial maps (default: 24)")
     return p.parse_args()
 
 
@@ -182,7 +185,6 @@ def parse_args():
 def main():
     args = parse_args()
     OUT  = args.out_dir
-    LEAD = args.map_lead
     os.makedirs(OUT, exist_ok=True)
 
     # ── Connect ──────────────────────────────────────────────────────────────
@@ -200,6 +202,12 @@ def main():
 
     def q(sql):
         return db.query(sql)
+
+    # All available lead times — computed once, reused by §5–§8, §10, §11
+    all_leads_bias = sorted(
+        q("SELECT DISTINCT lead_time FROM ifs_bias ORDER BY lead_time")["lead_time"].tolist()
+    )
+    lead_default = 24 if 24 in all_leads_bias else (all_leads_bias[0] if all_leads_bias else 24)
 
     # ── Load shapefile once ───────────────────────────────────────────────────
     print("Loading county shapefile …")
@@ -519,149 +527,150 @@ def main():
     # §5  Seasonal maps
     # ══════════════════════════════════════════════════════════════════════════
     def sec5():
-        section(f"§5  Maps (lead={LEAD}h)")
+        section("§5  Maps (all leads)")
 
-        # — All-time average maps ─────────────────────────────────────────────
-        df_all = q(f"""
-            SELECT geo_id,
-                AVG(bias)      AS mean_bias,
-                AVG(abs_error) AS mae,
-                AVG(aland)     AS aland
-            FROM ifs_bias WHERE lead_time = {LEAD}
-            GROUP BY geo_id
-        """)
-        df_all = prep_geo(df_all)
-
-        for metric, cmap, label, diverging, fname in [
-            ("mean_bias", RDBU, "Bias (K)", True,  f"ifs_bias_alltime_lead{LEAD}h.png"),
-            ("mae",       REDS, "MAE (K)",  False, f"ifs_mae_alltime_lead{LEAD}h.png"),
-        ]:
-            absmax = df_all[metric].abs().quantile(0.98)
-            vmin = -absmax if diverging else df_all[metric].quantile(0.02)
-            vmax =  absmax if diverging else df_all[metric].quantile(0.98)
-            gdf = merge_map(df_all, metric)
-            aw = aw_mean(df_all, metric)
-            fig, ax = plt.subplots(figsize=(12, 6))
-            county_map(ax, gdf, metric, cmap, vmin, vmax,
-                       f"IFS {label} — all time, lead {LEAD}h  (aw={aw:+.3f} K)"
-                       if diverging else
-                       f"IFS {label} — all time, lead {LEAD}h  (aw={aw:.3f} K)",
-                       label)
-            plt.tight_layout()
-            savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
-
-        if HAS_ANOM:
-            df_all_anom = q(f"""
+        for lead in all_leads_bias:
+            # — All-time average maps ─────────────────────────────────────────────
+            df_all = q(f"""
                 SELECT geo_id,
-                    AVG(fc_anom)           AS fc_anom,
-                    AVG(an_anom)           AS an_anom,
-                    CORR(fc_anom, an_anom) AS acc
-                FROM ifs_anom WHERE lead_time = {LEAD}
+                    AVG(bias)      AS mean_bias,
+                    AVG(abs_error) AS mae,
+                    AVG(aland)     AS aland
+                FROM ifs_bias WHERE lead_time = {lead}
                 GROUP BY geo_id
             """)
-            df_all_anom = prep_geo(df_all_anom)
-            absmax_anom = max(df_all_anom["fc_anom"].abs().quantile(0.98),
-                              df_all_anom["an_anom"].abs().quantile(0.98))
+            df_all = prep_geo(df_all)
 
-            for metric, label, fname in [
-                ("fc_anom", "FC anomaly (K)", f"ifs_fc_anom_alltime_lead{LEAD}h.png"),
-                ("an_anom", "AN anomaly (K)", f"ifs_an_anom_alltime_lead{LEAD}h.png"),
+            for metric, cmap, label, diverging, fname in [
+                ("mean_bias", RDBU, "Bias (K)", True,  f"ifs_bias_alltime_lead{lead}h.png"),
+                ("mae",       REDS, "MAE (K)",  False, f"ifs_mae_alltime_lead{lead}h.png"),
             ]:
-                gdf = merge_map(df_all_anom, metric)
+                absmax = df_all[metric].abs().quantile(0.98)
+                vmin = -absmax if diverging else df_all[metric].quantile(0.02)
+                vmax =  absmax if diverging else df_all[metric].quantile(0.98)
+                gdf = merge_map(df_all, metric)
+                aw = aw_mean(df_all, metric)
                 fig, ax = plt.subplots(figsize=(12, 6))
-                county_map(ax, gdf, metric, RDBU, -absmax_anom, absmax_anom,
-                           f"IFS {label} — all time, lead {LEAD}h", label)
+                county_map(ax, gdf, metric, cmap, vmin, vmax,
+                           f"IFS {label} — all time, lead {lead}h  (aw={aw:+.3f} K)"
+                           if diverging else
+                           f"IFS {label} — all time, lead {lead}h  (aw={aw:.3f} K)",
+                           label)
                 plt.tight_layout()
                 savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
 
-            gdf_acc = merge_map(df_all_anom, "acc")
-            fig, ax = plt.subplots(figsize=(12, 6))
-            county_map(ax, gdf_acc, "acc", "viridis", 0, 1,
-                       f"IFS per-county ACC — all time, lead {LEAD}h", "ACC")
-            plt.tight_layout()
-            savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_alltime_lead{LEAD}h.png")
+            if HAS_ANOM:
+                df_all_anom = q(f"""
+                    SELECT geo_id,
+                        AVG(fc_anom)           AS fc_anom,
+                        AVG(an_anom)           AS an_anom,
+                        CORR(fc_anom, an_anom) AS acc
+                    FROM ifs_anom WHERE lead_time = {lead}
+                    GROUP BY geo_id
+                """)
+                df_all_anom = prep_geo(df_all_anom)
+                absmax_anom = max(df_all_anom["fc_anom"].abs().quantile(0.98),
+                                  df_all_anom["an_anom"].abs().quantile(0.98))
 
-        # — Seasonal bias and MAE maps ─────────────────────────────────────────
-        df_seas = q(f"""
-            SELECT geo_id,
-                {_season_sql()} AS season,
-                AVG(bias)      AS mean_bias,
-                AVG(abs_error) AS mae,
-                AVG(aland)     AS aland
-            FROM ifs_bias WHERE lead_time = {LEAD}
-            GROUP BY geo_id, season
-        """)
-        df_seas = prep_geo(df_seas)
+                for metric, label, fname in [
+                    ("fc_anom", "FC anomaly (K)", f"ifs_fc_anom_alltime_lead{lead}h.png"),
+                    ("an_anom", "AN anomaly (K)", f"ifs_an_anom_alltime_lead{lead}h.png"),
+                ]:
+                    gdf = merge_map(df_all_anom, metric)
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    county_map(ax, gdf, metric, RDBU, -absmax_anom, absmax_anom,
+                               f"IFS {label} — all time, lead {lead}h", label)
+                    plt.tight_layout()
+                    savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
 
-        for metric, cmap, label, diverging, fname in [
-            ("mean_bias", RDBU, "Bias (K)", True,  f"ifs_bias_seasonal_lead{LEAD}h.png"),
-            ("mae",       REDS, "MAE (K)",  False, f"ifs_mae_seasonal_lead{LEAD}h.png"),
-        ]:
-            absmax = df_seas[metric].abs().quantile(0.98)
-            vmin = -absmax if diverging else df_seas[metric].quantile(0.02)
-            vmax =  absmax if diverging else df_seas[metric].quantile(0.98)
+                gdf_acc = merge_map(df_all_anom, "acc")
+                fig, ax = plt.subplots(figsize=(12, 6))
+                county_map(ax, gdf_acc, "acc", "viridis", 0, 1,
+                           f"IFS per-county ACC — all time, lead {lead}h", "ACC")
+                plt.tight_layout()
+                savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_alltime_lead{lead}h.png")
 
-            fig, axes = plt.subplots(2, 2, figsize=(16, 9))
-            for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
-                d = df_seas[df_seas["season"] == season]
-                gdf = merge_map(d, metric)
-                county_map(ax, gdf, metric, cmap, vmin, vmax, season, label)
-                aw = aw_mean(d, metric)
-                ax.set_title(f"{season}  (aw={aw:+.3f} K)" if diverging
-                             else f"{season}  (aw={aw:.3f} K)", fontsize=9)
-            fig.suptitle(f"IFS {label} — lead {LEAD}h", fontsize=11)
-            plt.tight_layout()
-            savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
-
-        # — Forecast and analysis anomaly maps ────────────────────────────────
-        if HAS_ANOM:
-            df_anom = q(f"""
+            # — Seasonal bias and MAE maps ─────────────────────────────────────────
+            df_seas = q(f"""
                 SELECT geo_id,
                     {_season_sql()} AS season,
-                    AVG(fc_anom) AS fc_anom,
-                    AVG(an_anom) AS an_anom,
-                    AVG(aland)   AS aland
-                FROM ifs_anom WHERE lead_time = {LEAD}
+                    AVG(bias)      AS mean_bias,
+                    AVG(abs_error) AS mae,
+                    AVG(aland)     AS aland
+                FROM ifs_bias WHERE lead_time = {lead}
                 GROUP BY geo_id, season
             """)
-            df_anom = prep_geo(df_anom)
-            absmax = max(df_anom["fc_anom"].abs().quantile(0.98),
-                        df_anom["an_anom"].abs().quantile(0.98))
+            df_seas = prep_geo(df_seas)
 
-            for metric, label, fname in [
-                ("fc_anom", "Forecast anomaly (K)",  f"ifs_fc_anom_seasonal_lead{LEAD}h.png"),
-                ("an_anom", "Analysis anomaly (K)",  f"ifs_an_anom_seasonal_lead{LEAD}h.png"),
+            for metric, cmap, label, diverging, fname in [
+                ("mean_bias", RDBU, "Bias (K)", True,  f"ifs_bias_seasonal_lead{lead}h.png"),
+                ("mae",       REDS, "MAE (K)",  False, f"ifs_mae_seasonal_lead{lead}h.png"),
             ]:
+                absmax = df_seas[metric].abs().quantile(0.98)
+                vmin = -absmax if diverging else df_seas[metric].quantile(0.02)
+                vmax =  absmax if diverging else df_seas[metric].quantile(0.98)
+
                 fig, axes = plt.subplots(2, 2, figsize=(16, 9))
                 for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
-                    d = df_anom[df_anom["season"] == season]
+                    d = df_seas[df_seas["season"] == season]
                     gdf = merge_map(d, metric)
-                    county_map(ax, gdf, metric, RDBU, -absmax, absmax, season, label)
+                    county_map(ax, gdf, metric, cmap, vmin, vmax, season, label)
                     aw = aw_mean(d, metric)
-                    ax.set_title(f"{season}  (aw={aw:+.3f} K)", fontsize=9)
-                fig.suptitle(f"IFS {label} — lead {LEAD}h", fontsize=11)
+                    ax.set_title(f"{season}  (aw={aw:+.3f} K)" if diverging
+                                 else f"{season}  (aw={aw:.3f} K)", fontsize=9)
+                fig.suptitle(f"IFS {label} — lead {lead}h", fontsize=11)
                 plt.tight_layout()
                 savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
 
-            # Per-county ACC map (seasonal)
-            df_acc_county = q(f"""
-                SELECT geo_id,
-                    {_season_sql()} AS season,
-                    CORR(fc_anom, an_anom) AS acc
-                FROM ifs_anom WHERE lead_time = {LEAD}
-                GROUP BY geo_id, season
-            """)
-            df_acc_county = prep_geo(df_acc_county)
-            fig, axes = plt.subplots(2, 2, figsize=(16, 9))
-            for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
-                d = df_acc_county[df_acc_county["season"] == season]
-                gdf = merge_map(d, "acc")
-                county_map(ax, gdf, "acc", "viridis", 0, 1, season, "ACC")
-                mean_acc = d["acc"].mean()
-                ax.set_title(f"{season}  (mean={mean_acc:.3f})", fontsize=9)
-            fig.suptitle(f"IFS per-county ACC — lead {LEAD}h", fontsize=11)
-            plt.tight_layout()
-            savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_county_seasonal_lead{LEAD}h.png")
+            # — Forecast and analysis anomaly maps ────────────────────────────────
+            if HAS_ANOM:
+                df_anom = q(f"""
+                    SELECT geo_id,
+                        {_season_sql()} AS season,
+                        AVG(fc_anom) AS fc_anom,
+                        AVG(an_anom) AS an_anom,
+                        AVG(aland)   AS aland
+                    FROM ifs_anom WHERE lead_time = {lead}
+                    GROUP BY geo_id, season
+                """)
+                df_anom = prep_geo(df_anom)
+                absmax = max(df_anom["fc_anom"].abs().quantile(0.98),
+                            df_anom["an_anom"].abs().quantile(0.98))
+
+                for metric, label, fname in [
+                    ("fc_anom", "Forecast anomaly (K)",  f"ifs_fc_anom_seasonal_lead{lead}h.png"),
+                    ("an_anom", "Analysis anomaly (K)",  f"ifs_an_anom_seasonal_lead{lead}h.png"),
+                ]:
+                    fig, axes = plt.subplots(2, 2, figsize=(16, 9))
+                    for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
+                        d = df_anom[df_anom["season"] == season]
+                        gdf = merge_map(d, metric)
+                        county_map(ax, gdf, metric, RDBU, -absmax, absmax, season, label)
+                        aw = aw_mean(d, metric)
+                        ax.set_title(f"{season}  (aw={aw:+.3f} K)", fontsize=9)
+                    fig.suptitle(f"IFS {label} — lead {lead}h", fontsize=11)
+                    plt.tight_layout()
+                    savefig(fig, f"{OUT}/05_seasonal_maps/{fname}")
+
+                # Per-county ACC map (seasonal)
+                df_acc_county = q(f"""
+                    SELECT geo_id,
+                        {_season_sql()} AS season,
+                        CORR(fc_anom, an_anom) AS acc
+                    FROM ifs_anom WHERE lead_time = {lead}
+                    GROUP BY geo_id, season
+                """)
+                df_acc_county = prep_geo(df_acc_county)
+                fig, axes = plt.subplots(2, 2, figsize=(16, 9))
+                for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
+                    d = df_acc_county[df_acc_county["season"] == season]
+                    gdf = merge_map(d, "acc")
+                    county_map(ax, gdf, "acc", "viridis", 0, 1, season, "ACC")
+                    mean_acc = d["acc"].mean()
+                    ax.set_title(f"{season}  (mean={mean_acc:.3f})", fontsize=9)
+                fig.suptitle(f"IFS per-county ACC — lead {lead}h", fontsize=11)
+                plt.tight_layout()
+                savefig(fig, f"{OUT}/05_seasonal_maps/ifs_acc_county_seasonal_lead{lead}h.png")
 
     try_section("§5", sec5)
 
@@ -670,8 +679,7 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════
     def sec6():
         section("§6  Histograms")
-        all_leads = sorted(q("SELECT DISTINCT lead_time FROM ifs_bias ORDER BY lead_time")["lead_time"])
-        HIST_LEADS = [lt for lt in [24, 72, 120, 240] if lt in all_leads]
+        HIST_LEADS = [lt for lt in [24, 72, 120, 240] if lt in all_leads_bias]
 
         df_hist = q(f"""
             SELECT lead_time, geo_id,
@@ -682,6 +690,7 @@ def main():
             GROUP BY lead_time, geo_id
         """)
 
+        # Multi-lead bias/MAE histogram overlay
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
         for ax, col, xlabel in [
             (axes[0], "mean_bias", "County mean bias (K)"),
@@ -700,44 +709,57 @@ def main():
         plt.tight_layout()
         savefig(fig, f"{OUT}/06_histograms/ifs_bias_mae_hist.png")
 
-        # Seasonal histograms at map lead
-        df_seas_hist = q(f"""
-            SELECT geo_id,
-                {_season_sql()} AS season,
-                AVG(bias)      AS mean_bias,
-                AVG(abs_error) AS mae
-            FROM ifs_bias WHERE lead_time = {LEAD}
-            GROUP BY geo_id, season
-        """)
-        fig, axes = plt.subplots(2, 4, figsize=(16, 7), sharey="row")
-        for row, (col, xlabel) in enumerate([("mean_bias", "County mean bias (K)"),
-                                              ("mae",       "County mean MAE (K)")]):
-            for ax, season in zip(axes[row], ["DJF", "MAM", "JJA", "SON"]):
-                d = df_seas_hist[df_seas_hist["season"] == season][col].dropna()
-                ax.hist(d, bins=50, density=True, color="#1f77b4", alpha=0.75)
-                if col == "mean_bias":
-                    ax.axvline(0, color="k", lw=0.8, ls="--")
-                ax.set_title(season, fontsize=10)
-                ax.set_xlabel(xlabel, fontsize=8)
-                if ax is axes[row][0]:
-                    ax.set_ylabel("Density", fontsize=8)
-                ax.grid(True, alpha=0.3)
-        fig.suptitle(f"IFS — county mean bias and MAE distributions by season (lead {LEAD}h)",
-                     fontsize=11)
-        plt.tight_layout()
-        savefig(fig, f"{OUT}/06_histograms/ifs_seasonal_hist_lead{LEAD}h.png")
+        # Seasonal histograms — loop over all leads
+        for lead in all_leads_bias:
+            df_seas_hist = q(f"""
+                SELECT geo_id,
+                    {_season_sql()} AS season,
+                    AVG(bias)      AS mean_bias,
+                    AVG(abs_error) AS mae
+                FROM ifs_bias WHERE lead_time = {lead}
+                GROUP BY geo_id, season
+            """)
+            fig, axes = plt.subplots(2, 4, figsize=(16, 7), sharey="row")
+            for row, (col, xlabel) in enumerate([("mean_bias", "County mean bias (K)"),
+                                                  ("mae",       "County mean MAE (K)")]):
+                for ax, season in zip(axes[row], ["DJF", "MAM", "JJA", "SON"]):
+                    d = df_seas_hist[df_seas_hist["season"] == season][col].dropna()
+                    ax.hist(d, bins=50, density=True, color="#1f77b4", alpha=0.75)
+                    if col == "mean_bias":
+                        ax.axvline(0, color="k", lw=0.8, ls="--")
+                    ax.set_title(season, fontsize=10)
+                    ax.set_xlabel(xlabel, fontsize=8)
+                    if ax is axes[row][0]:
+                        ax.set_ylabel("Density", fontsize=8)
+                    ax.grid(True, alpha=0.3)
+            fig.suptitle(f"IFS — county mean bias and MAE distributions by season (lead {lead}h)",
+                         fontsize=11)
+            plt.tight_layout()
+            savefig(fig, f"{OUT}/06_histograms/ifs_seasonal_hist_lead{lead}h.png")
 
-        # Bias distribution map (24h) — highlight outlier counties
-        d24 = df_hist[df_hist["lead_time"] == 24]
-        low, high = d24["mean_bias"].quantile([0.05, 0.95])
-        gdf_bias24 = merge_map(d24, "mean_bias")
-        absmax = d24["mean_bias"].abs().quantile(0.98)
-        fig, ax = plt.subplots(figsize=(12, 6))
-        county_map(ax, gdf_bias24, "mean_bias", RDBU, -absmax, absmax,
-                   "IFS 24h — county mean bias (full record)", "Bias (K)")
-        fig.suptitle(f"5th/95th pctile counties: [{low:+.3f}, {high:+.3f}] K", fontsize=9)
-        plt.tight_layout()
-        savefig(fig, f"{OUT}/06_histograms/ifs_24h_mean_bias_map.png")
+        # Bias distribution map — loop over all leads
+        for lead in all_leads_bias:
+            if lead in HIST_LEADS:
+                d_lead = df_hist[df_hist["lead_time"] == lead]
+            else:
+                d_lead = q(f"""
+                    SELECT lead_time, geo_id,
+                        AVG(bias)      AS mean_bias,
+                        AVG(abs_error) AS mae
+                    FROM ifs_bias WHERE lead_time = {lead}
+                    GROUP BY lead_time, geo_id
+                """)
+            if d_lead.empty:
+                continue
+            low, high = d_lead["mean_bias"].quantile([0.05, 0.95])
+            gdf_bias = merge_map(d_lead, "mean_bias")
+            absmax = d_lead["mean_bias"].abs().quantile(0.98)
+            fig, ax = plt.subplots(figsize=(12, 6))
+            county_map(ax, gdf_bias, "mean_bias", RDBU, -absmax, absmax,
+                       f"IFS lead {lead}h — county mean bias (full record)", "Bias (K)")
+            fig.suptitle(f"5th/95th pctile counties: [{low:+.3f}, {high:+.3f}] K", fontsize=9)
+            plt.tight_layout()
+            savefig(fig, f"{OUT}/06_histograms/ifs_lead{lead}h_mean_bias_map.png")
 
     try_section("§6", sec6)
 
@@ -788,33 +810,34 @@ def main():
         plt.tight_layout()
         savefig(fig, f"{OUT}/07_climate_regions/ifs_skill_by_koppen.png")
 
-        # Koppen × season heatmap
-        df_ks = q(f"""
-            SELECT k.category_1 AS koppen,
-                {_season_sql('b.valid_time')} AS season,
-                SUM(b.bias * b.aland) / SUM(b.aland) AS aw_bias
-            FROM ifs_bias b
-            JOIN koppen k ON b.geo_id = k.geo_id
-            WHERE b.lead_time = {LEAD}
-            GROUP BY k.category_1, season
-        """)
-        pivot_ks = (df_ks.pivot(index="koppen", columns="season", values="aw_bias")
-                    .reindex(columns=["DJF", "MAM", "JJA", "SON"]))
-        pivot_ks_labels = [koppen_label(c) for c in pivot_ks.index]
-        absmax = pivot_ks.abs().max().max()
-        fig, ax = plt.subplots(figsize=(10, max(4, len(classes) * 0.55 + 1)))
-        im = ax.imshow(pivot_ks.values, cmap=RDBU, vmin=-absmax, vmax=absmax, aspect="auto")
-        ax.set_xticks(range(4))
-        ax.set_xticklabels(["DJF", "MAM", "JJA", "SON"])
-        ax.set_yticks(range(len(pivot_ks)))
-        ax.set_yticklabels(pivot_ks_labels, fontsize=8)
-        for (r, c), val in np.ndenumerate(pivot_ks.values):
-            if not np.isnan(val):
-                ax.text(c, r, f"{val:+.2f}", ha="center", va="center", fontsize=8)
-        plt.colorbar(im, ax=ax, label="Area-weighted bias (K)")
-        ax.set_title(f"IFS mean bias — Koppen × season (lead {LEAD}h)")
-        plt.tight_layout()
-        savefig(fig, f"{OUT}/07_climate_regions/ifs_bias_koppen_seasonal.png")
+        # Koppen × season heatmap — loop over all leads
+        for lead in all_leads_bias:
+            df_ks = q(f"""
+                SELECT k.category_1 AS koppen,
+                    {_season_sql('b.valid_time')} AS season,
+                    SUM(b.bias * b.aland) / SUM(b.aland) AS aw_bias
+                FROM ifs_bias b
+                JOIN koppen k ON b.geo_id = k.geo_id
+                WHERE b.lead_time = {lead}
+                GROUP BY k.category_1, season
+            """)
+            pivot_ks = (df_ks.pivot(index="koppen", columns="season", values="aw_bias")
+                        .reindex(columns=["DJF", "MAM", "JJA", "SON"]))
+            pivot_ks_labels = [koppen_label(c) for c in pivot_ks.index]
+            absmax = pivot_ks.abs().max().max()
+            fig, ax = plt.subplots(figsize=(10, max(4, len(classes) * 0.55 + 1)))
+            im = ax.imshow(pivot_ks.values, cmap=RDBU, vmin=-absmax, vmax=absmax, aspect="auto")
+            ax.set_xticks(range(4))
+            ax.set_xticklabels(["DJF", "MAM", "JJA", "SON"])
+            ax.set_yticks(range(len(pivot_ks)))
+            ax.set_yticklabels(pivot_ks_labels, fontsize=8)
+            for (r, c), val in np.ndenumerate(pivot_ks.values):
+                if not np.isnan(val):
+                    ax.text(c, r, f"{val:+.2f}", ha="center", va="center", fontsize=8)
+            plt.colorbar(im, ax=ax, label="Area-weighted bias (K)")
+            ax.set_title(f"IFS mean bias — Koppen × season (lead {lead}h)")
+            plt.tight_layout()
+            savefig(fig, f"{OUT}/07_climate_regions/ifs_bias_koppen_seasonal_lead{lead}h.png")
 
         # Add to summary
         for _, row in df_kop.iterrows():
@@ -846,15 +869,17 @@ def main():
             print("  Skipped — no demo_ columns found in model_input.parquet")
             return
 
-        # County mean bias averaged across all day-of-year at map lead
+        # County mean bias averaged across all day-of-year at lead_default
+        avail_mi_leads = sorted(df_mi["lead_time"].unique()) if "lead_time" in df_mi.columns else []
+        demo_lead = lead_default if lead_default in avail_mi_leads else (avail_mi_leads[0] if avail_mi_leads else lead_default)
         df_county = (
-            df_mi[df_mi["lead_time"] == LEAD]
+            df_mi[df_mi["lead_time"] == demo_lead]
             .groupby("geo_id")[["mean_bias"] + demo_cols]
             .mean()
             .reset_index()
             .dropna(subset=["mean_bias"])
         )
-        print(f"  {len(df_county):,} counties at lead {LEAD}h")
+        print(f"  {len(df_county):,} counties at lead {demo_lead}h")
 
         # Scatter grid
         n_demo = len(demo_cols)
@@ -885,7 +910,7 @@ def main():
         for j in range(i + 1, len(axes)):
             axes[j].set_visible(False)
 
-        fig.suptitle(f"IFS {LEAD}h county mean bias vs demographic indices", fontsize=11)
+        fig.suptitle(f"IFS {demo_lead}h county mean bias vs demographic indices", fontsize=11)
         plt.tight_layout()
         savefig(fig, f"{OUT}/08_demographics/ifs_bias_vs_demo_scatter.png")
 
@@ -898,7 +923,7 @@ def main():
                     corr_s.values, color=bar_colors)
             ax.axvline(0, color="k", lw=0.8)
             ax.set_xlabel("Pearson r with county mean bias")
-            ax.set_title(f"IFS {LEAD}h — bias–demographic correlations")
+            ax.set_title(f"IFS {demo_lead}h — bias–demographic correlations")
             ax.grid(True, alpha=0.3, axis="x")
             plt.tight_layout()
             savefig(fig, f"{OUT}/08_demographics/ifs_bias_demo_correlations.png")
@@ -909,6 +934,185 @@ def main():
                     print(f"    {name.replace('demo_',''):30s}  r = {r:+.3f}")
 
     try_section("§8", sec8)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # §10  MSE decomposition maps (3×3 panel — bias sign × anomaly sign)
+    # ══════════════════════════════════════════════════════════════════════════
+    def sec10():
+        if not HAS_ANOM:
+            print("  Skipped — ifs_anom view not registered")
+            return
+        section("§10  MSE decomposition maps")
+
+        all_leads_anom = sorted(
+            q("SELECT DISTINCT lead_time FROM ifs_anom ORDER BY lead_time")["lead_time"].tolist()
+        )
+
+        # (row, col, column_name, panel_title)
+        panel_specs = [
+            (0, 0, "mse_total",     "Total"),
+            (0, 1, "mse_cold_bias", "Cold bias"),
+            (0, 2, "mse_hot_bias",  "Hot bias"),
+            (1, 0, "mse_cold_anom", "Cold anom"),
+            (1, 1, "mse_ca_cb",     "Cold anom + Cold bias"),
+            (1, 2, "mse_ca_hb",     "Cold anom + Hot bias"),
+            (2, 0, "mse_hot_anom",  "Hot anom"),
+            (2, 1, "mse_ha_cb",     "Hot anom + Cold bias"),
+            (2, 2, "mse_ha_hb",     "Hot anom + Hot bias"),
+        ]
+
+        def _query_mse(lead, where_extra=""):
+            return prep_geo(q(f"""
+                SELECT geo_id,
+                    AVG(bias * bias)                                              AS mse_total,
+                    AVG(CASE WHEN bias    < 0 THEN bias*bias END)                 AS mse_cold_bias,
+                    AVG(CASE WHEN bias    > 0 THEN bias*bias END)                 AS mse_hot_bias,
+                    AVG(CASE WHEN an_anom < 0 THEN bias*bias END)                 AS mse_cold_anom,
+                    AVG(CASE WHEN an_anom > 0 THEN bias*bias END)                 AS mse_hot_anom,
+                    AVG(CASE WHEN an_anom < 0 AND bias < 0 THEN bias*bias END)    AS mse_ca_cb,
+                    AVG(CASE WHEN an_anom < 0 AND bias > 0 THEN bias*bias END)    AS mse_ca_hb,
+                    AVG(CASE WHEN an_anom > 0 AND bias < 0 THEN bias*bias END)    AS mse_ha_cb,
+                    AVG(CASE WHEN an_anom > 0 AND bias > 0 THEN bias*bias END)    AS mse_ha_hb
+                FROM ifs_anom
+                WHERE lead_time = {lead}{where_extra}
+                GROUP BY geo_id
+            """))
+
+        def _plot_mse9(df, label, lead, fname, vmax):
+            fig, axes = plt.subplots(3, 3, figsize=(18, 14), constrained_layout=True)
+            for ri, ci, col, title in panel_specs:
+                ax = axes[ri, ci]
+                gdf = merge_map(df, col)
+                county_map(ax, gdf, col, REDS, 0, vmax, title, "MSE (K²)")
+            fig.suptitle(f"IFS MSE decomposition — {label}, lead {lead}h", fontsize=13)
+            savefig(fig, fname)
+
+        for lead in all_leads_anom:
+            df_all = _query_mse(lead)
+            vmax = float(df_all["mse_total"].quantile(0.98))
+
+            _plot_mse9(df_all, "all time", lead,
+                       f"{OUT}/10_mse_decomp/ifs_mse9_alltime_lead{lead}h.png", vmax)
+
+            for season in ["DJF", "MAM", "JJA", "SON"]:
+                df_seas = _query_mse(lead, f" AND {_season_sql()} = '{season}'")
+                _plot_mse9(df_seas, season, lead,
+                           f"{OUT}/10_mse_decomp/ifs_mse9_{season}_lead{lead}h.png", vmax)
+
+    try_section("§10", sec10)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # §11  Joint PDF — observed anomaly vs forecast bias
+    # ══════════════════════════════════════════════════════════════════════════
+    def sec11():
+        if not HAS_ANOM:
+            print("  Skipped — ifs_anom view not registered")
+            return
+        section("§11  Joint PDF — anomaly vs bias")
+
+        all_leads_anom = sorted(
+            q("SELECT DISTINCT lead_time FROM ifs_anom ORDER BY lead_time")["lead_time"].tolist()
+        )
+        PDF_XLIM = (-10, 10)  # observed anomaly axis
+        PDF_YLIM = (-10, 10)  # forecast bias axis
+
+        def _query_pdf(lead, where_extra=""):
+            return q(f"""
+                SELECT
+                    ROUND(an_anom / {PDF_BIN_K}) * {PDF_BIN_K}  AS anom_bin,
+                    ROUND(bias    / {PDF_BIN_K}) * {PDF_BIN_K}  AS bias_bin,
+                    SUM(aland)                                   AS total_area
+                FROM ifs_anom
+                WHERE lead_time = {lead}{where_extra}
+                GROUP BY anom_bin, bias_bin
+                ORDER BY anom_bin, bias_bin
+            """)
+
+        def _pivot_pdf(df):
+            """Clamp to axis limits, pivot to 2D grid, and normalise by total area."""
+            df = df[
+                (df["anom_bin"] >= PDF_XLIM[0]) & (df["anom_bin"] <= PDF_XLIM[1]) &
+                (df["bias_bin"] >= PDF_YLIM[0]) & (df["bias_bin"] <= PDF_YLIM[1])
+            ].copy()
+            if df.empty:
+                return pd.DataFrame()
+            pivot = df.pivot_table(index="bias_bin", columns="anom_bin",
+                                   values="total_area", aggfunc="sum", fill_value=0)
+            total = pivot.values.sum()
+            if total > 0:
+                pivot = pivot / total
+            return pivot
+
+        def _plot_pdf_ax(ax, pivot, title, norm=None):
+            if pivot.empty or pivot.values.sum() == 0:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                        transform=ax.transAxes)
+                ax.set_title(title, fontsize=9)
+                return None
+            if norm is None:
+                vmax = float(pivot.values.max())
+                norm = mcolors.LogNorm(vmin=1e-4, vmax=max(vmax, 1e-3))
+            extent = [
+                float(pivot.columns.min()) - PDF_BIN_K / 2,
+                float(pivot.columns.max()) + PDF_BIN_K / 2,
+                float(pivot.index.min())   - PDF_BIN_K / 2,
+                float(pivot.index.max())   + PDF_BIN_K / 2,
+            ]
+            im = ax.imshow(pivot.values, cmap="plasma", norm=norm,
+                           origin="lower", extent=extent, aspect="auto")
+            ax.axhline(0, color="white", lw=0.8, alpha=0.6)
+            ax.axvline(0, color="white", lw=0.8, alpha=0.6)
+            ax.set_xlim(*PDF_XLIM)
+            ax.set_ylim(*PDF_YLIM)
+            ax.set_xlabel("Observed anomaly (K)", fontsize=8)
+            ax.set_ylabel("Forecast bias (K)", fontsize=8)
+            ax.set_title(title, fontsize=9)
+            # Quadrant corner labels
+            for tx, ty, lbl in [
+                (-8,  8, "Cold anom\nHot bias"),
+                ( 8,  8, "Hot anom\nHot bias"),
+                (-8, -8, "Cold anom\nCold bias"),
+                ( 8, -8, "Hot anom\nCold bias"),
+            ]:
+                ax.text(tx, ty, lbl, ha="center", va="center",
+                        fontsize=6, color="white", alpha=0.7)
+            return im
+
+        for lead in all_leads_anom:
+            # — All-time single panel ─────────────────────────────────────────
+            pivot_all = _pivot_pdf(_query_pdf(lead))
+            fig, ax = plt.subplots(figsize=(7, 6))
+            im = _plot_pdf_ax(ax, pivot_all, f"IFS — all time, lead {lead}h")
+            if im is not None:
+                plt.colorbar(im, ax=ax, label="Area-weighted density")
+            plt.tight_layout()
+            savefig(fig, f"{OUT}/11_joint_pdf/ifs_joint_pdf_alltime_lead{lead}h.png")
+
+            # — Seasonal 2×2 ──────────────────────────────────────────────────
+            pivots = {
+                s: _pivot_pdf(_query_pdf(lead, f" AND {_season_sql()} = '{s}'"))
+                for s in ["DJF", "MAM", "JJA", "SON"]
+            }
+            nonempty = [p for p in pivots.values() if not p.empty and p.values.sum() > 0]
+            seas_vmax = max((float(p.values.max()) for p in nonempty), default=1e-3)
+            seas_norm = mcolors.LogNorm(vmin=1e-4, vmax=max(seas_vmax, 1e-3))
+
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            last_im = None
+            for ax, season in zip(axes.flatten(), ["DJF", "MAM", "JJA", "SON"]):
+                im = _plot_pdf_ax(ax, pivots[season], season, norm=seas_norm)
+                if im is not None:
+                    last_im = im
+            fig.suptitle(
+                f"IFS — joint PDF (observed anomaly vs forecast bias) by season, lead {lead}h",
+                fontsize=11)
+            if last_im is not None:
+                fig.colorbar(last_im, ax=axes.ravel().tolist(),
+                             label="Area-weighted density", shrink=0.6)
+            plt.tight_layout()
+            savefig(fig, f"{OUT}/11_joint_pdf/ifs_joint_pdf_seasonal_lead{lead}h.png")
+
+    try_section("§11", sec11)
 
     # ══════════════════════════════════════════════════════════════════════════
     # §9  Summary table
