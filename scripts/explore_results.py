@@ -88,7 +88,7 @@ RDBU     = "RdBu_r"
 REDS     = "YlOrRd"
 PDF_BIN_K = 0.5
 
-MODEL_COLORS   = {"IFS": "#1f77b4", "AIFS": "#ff7f0e", "IFS_sub": "#aec7e8"}
+MODEL_COLORS   = {"IFS": "black", "AIFS": "red", "IFS_sub": "slategray"}
 MODEL_LS       = {"IFS": "-",       "AIFS": "--",       "IFS_sub": ":"}
 MODEL_MARKERS  = {"IFS": "o",       "AIFS": "s",        "IFS_sub": "^"}
 
@@ -136,24 +136,20 @@ def _season_sql(col="valid_time"):
         ELSE                                  'SON'
     END"""
 
-
 def _wa_acc(fc="fc_anom", an="an_anom", w="aland"):
     """Area-weighted correlation (ACC) as a SQL expression.
+    ECMWF definition
 
-    Implements:  Σw(xy)/Σw − (Σwx/Σw)(Σwy/Σw)
-                 ─────────────────────────────────────────
-                 √(Var_w(x)) · √(Var_w(y))
+    Implements:  Σw(fc * an)/Σw
+                 ────────────────────────────
+                 √(Σw(fc^2)/Σw * Σw(an^2)/Σw)
     """
     return f"""(
         SUM({w}*{fc}*{an})/SUM({w})
-        - (SUM({w}*{fc})/SUM({w})) * (SUM({w}*{an})/SUM({w}))
     ) / NULLIF(
-        SQRT(ABS(SUM({w}*{fc}*{fc})/SUM({w}) - POW(SUM({w}*{fc})/SUM({w}), 2))) *
-        SQRT(ABS(SUM({w}*{an}*{an})/SUM({w}) - POW(SUM({w}*{an})/SUM({w}), 2))),
+        SQRT(SUM({w}*{fc}*{fc})/SUM({w}) * SUM({w}*{an}*{an})/SUM({w})),
         0
     )"""
-
-
 
 # ---------------------------------------------------------------------------
 # Plot helpers
@@ -220,6 +216,11 @@ def parse_args():
                    help="Skip choropleth sections (4, 5, 6) — much faster")
     p.add_argument("--include-off-cycle", action="store_true",
                    help="Include 6z/18z init times (excluded by default)")
+    p.add_argument(
+        "--sections",
+        default=None,
+        help="Comma-separated section numbers to run, e.g. 1,3,7 (default: all sections)",
+    )
     return p.parse_args()
 
 
@@ -333,6 +334,12 @@ def main():
     leads_anom_sql = ", ".join(str(l) for l in all_leads_anom) if all_leads_anom else "NULL"
 
     # ── Load shapefile once ───────────────────────────────────────────────
+    # Parse section filter (if any) early so we can avoid unnecessary work
+    if args.sections is None:
+        sections_to_run = None  # run all
+    else:
+        sections_to_run = {s.strip() for s in args.sections.split(",") if s.strip()}
+
     print("Loading county shapefile …")
     gdf_base = (
         gpd.read_file(SHAPEFILE_PATH)[["GEOID", "NAME", "geometry"]]
@@ -349,29 +356,33 @@ def main():
     # 1  Aggregate skill curves — all models, all leads
     # ══════════════════════════════════════════════════════════════════════════
     def sec1():
+        if sections_to_run is not None and "1" not in sections_to_run:
+            print("  Skipped — section 1 not selected via --sections")
+            return
         section("1  Aggregate skill curves")
 
-        # 5 rows (All + 4 seasons) × 3 cols (RMSE, MAE, ACC)
-        # Each row: lines = models, x = lead time
-        SEASONS    = ["DJF", "MAM", "JJA", "SON"]
-        row_labels = ["All time"] + SEASONS
-        col_specs  = [
-            ("aw_rmse", "RMSE (K)",    False),
-            ("aw_mae",  "MAE (K)",     False),
-            ("aw_acc",  "ACC",         True),   # True = needs anom view
+        # 3 rows (metrics) × 5 cols (All + 4 seasons)
+        # Each panel: lines = models, x = lead time
+        SEASONS     = ["DJF", "MAM", "JJA", "SON"]
+        col_labels  = ["Annual"] + SEASONS
+        col_seasons = [None] + SEASONS
+        row_specs   = [
+            ("aw_rmse", "RMSE (K)", False, "rmse"),
+            ("aw_mae",  "MAE (K)",  False, "mae"),
+            ("aw_acc",  "ACC",      True,  "acc"),   # True = needs anom view
         ]
 
-        fig, axes = plt.subplots(5, 3, figsize=(15, 16), constrained_layout=True,
+        fig, axes = plt.subplots(3, 5, figsize=(20, 15), constrained_layout=True,
                                  sharex=True)
 
-        for ri, (row_lbl, season) in enumerate(zip(row_labels, [None] + SEASONS)):
-            sf = f" AND {_season_sql()} = '{season}'" if season else ""
+        for ci, (col_lbl, season) in enumerate(zip(col_labels, col_seasons)):
+            sf   = f" AND {_season_sql()} = '{season}'" if season else ""
             sf_a = sf  # same filter applies to anom views
 
             for mname, bv, av in MODELS:
                 kw = dict(color=MODEL_COLORS[mname], ls=MODEL_LS[mname],
                           marker=MODEL_MARKERS[mname], ms=3, lw=1.3,
-                          label=mname if ri == 0 else "")
+                          label=mname if ci == 0 else "")
 
                 df_b = q(f"""
                     SELECT lead_time,
@@ -381,8 +392,19 @@ def main():
                     WHERE lead_time IN ({leads_sql}){sf}
                     GROUP BY lead_time ORDER BY lead_time
                 """)
-                axes[ri, 0].plot(df_b["lead_time"], df_b["aw_rmse"], **kw)
-                axes[ri, 1].plot(df_b["lead_time"], df_b["aw_mae"],  **kw)
+
+                if not df_b.empty:
+                    axes[0, ci].plot(df_b["lead_time"], df_b["aw_rmse"], **kw)
+                    axes[1, ci].plot(df_b["lead_time"], df_b["aw_mae"],  **kw)
+
+                    grp = f"season_{season}" if season else "all"
+                    for row in df_b.itertuples():
+                        for metric, val in [("rmse", row.aw_rmse), ("mae", row.aw_mae)]:
+                            summary_rows.append({
+                                "model": mname, "group": grp,
+                                "lead_time": int(row.lead_time),
+                                "metric": metric, "value": val,
+                            })
 
                 if av:
                     df_a = q(f"""
@@ -391,55 +413,53 @@ def main():
                         WHERE lead_time IN ({leads_anom_sql}){sf_a}
                         GROUP BY lead_time ORDER BY lead_time
                     """)
-                    axes[ri, 2].plot(df_a["lead_time"], df_a["aw_acc"], **kw)
+                    if not df_a.empty:
+                        axes[2, ci].plot(df_a["lead_time"], df_a["aw_acc"], **kw)
 
-                    for row in df_a.itertuples():
-                        summary_rows.append({
-                            "model": mname,
-                            "group": f"season_{season}" if season else "all",
-                            "lead_time": int(row.lead_time),
-                            "metric": "acc", "value": row.aw_acc,
-                        })
+                        for row in df_a.itertuples():
+                            summary_rows.append({
+                                "model": mname,
+                                "group": f"season_{season}" if season else "all",
+                                "lead_time": int(row.lead_time),
+                                "metric": "acc", "value": row.aw_acc,
+                            })
 
-                for row in df_b.itertuples():
-                    grp = f"season_{season}" if season else "all"
-                    for metric, val in [("rmse", row.aw_rmse), ("mae", row.aw_mae)]:
-                        summary_rows.append({
-                            "model": mname, "group": grp,
-                            "lead_time": int(row.lead_time),
-                            "metric": metric, "value": val,
-                        })
+            # Column titles
+            axes[0, ci].set_title(col_lbl, fontsize=10, fontweight="bold")
 
-            # Row label on left of first column
-            axes[ri, 0].annotate(row_lbl, xy=(-0.18, 0.5),
-                                 xycoords="axes fraction",
-                                 fontsize=9, ha="right", va="center",
-                                 fontweight="bold", rotation=90)
-
-        # ACC y-limits (NaN-safe)
-        for ri in range(5):
-            ax = axes[ri, 2]
-            vals = np.concatenate([l.get_ydata() for l in ax.get_lines()
-                                   if len(l.get_ydata()) > 0])
-            lo = float(np.nanmin(vals)) if len(vals) > 0 else 0.0
-            ax.set_ylim(lo - 0.03, 1.0)
-
-        # Column titles
-        for ci, (_, ylabel, _) in enumerate(col_specs):
-            axes[0, ci].set_title(ylabel, fontsize=10, fontweight="bold")
+        # Shared y-limits within each metric row (NaN-safe)
+        for ri, (metric_key, ylabel, needs_anom, _) in enumerate(row_specs):
+            row_axes = axes[ri, :]
+            vals = np.concatenate([
+                l.get_ydata() for ax in row_axes for l in ax.get_lines()
+                if len(l.get_ydata()) > 0
+            ]) if any(ax.get_lines() for ax in row_axes) else np.array([])
+            if len(vals) == 0:
+                continue
+            lo = float(np.nanmin(vals))
+            hi = float(np.nanmax(vals))
+            if metric_key == "aw_acc":
+                lo = lo - 0.03
+                hi = 1.0
+            else:
+                pad = 0.05 * (hi - lo) if hi > lo else 0.1
+                lo -= pad
+                hi += pad
+            for ax in row_axes:
+                ax.set_ylim(lo, hi)
 
         # x-labels on bottom row only
         for ax in axes[-1]:
             ax.set_xlabel("Lead time (h)")
 
-        # y-labels on each row
-        for ri in range(5):
-            for ci, (_, ylabel, _) in enumerate(col_specs):
-                axes[ri, ci].set_ylabel(ylabel, fontsize=8)
-                axes[ri, ci].grid(True, alpha=0.3)
+        # y-labels and grids on each row
+        for ri, (_, ylabel, _, _) in enumerate(row_specs):
+            for ax in axes[ri, :]:
+                ax.set_ylabel(ylabel, fontsize=8)
+                ax.grid(True, alpha=0.3)
 
         axes[0, 0].legend(fontsize=9, loc="upper right")
-        fig.suptitle("NWP 2m Temperature Forecast Skill (area-weighted)", fontsize=12)
+        fig.suptitle("NWP 2m Temperature Forecast Skill", fontsize=12)
         savefig(fig, f"{OUT}/01_skill/skill_curves.png")
 
     try_section("1", sec1)
@@ -448,6 +468,9 @@ def main():
     # 2  Timeseries — area-weighted daily bias / MAE (30-day MA)
     # ══════════════════════════════════════════════════════════════════════════
     def sec2():
+        if sections_to_run is not None and "2" not in sections_to_run:
+            print("  Skipped — section 2 not selected via --sections")
+            return
         section("2  Timeseries")
         MA = 30
 
@@ -520,6 +543,9 @@ def main():
     # 3  Seasonal cycle — lead × month / DOY heatmaps, Hovmöller
     # ══════════════════════════════════════════════════════════════════════════
     def sec3():
+        if sections_to_run is not None and "3" not in sections_to_run:
+            print("  Skipped — section 3 not selected via --sections")
+            return
         section("3  Seasonal cycle")
 
         # Use IFS as the reference; add AIFS overlays where leads match
@@ -743,6 +769,9 @@ def main():
     #    5 rows (Annual + seasons) × 4 cols per model per lead
     # ══════════════════════════════════════════════════════════════════════════
     def sec4():
+        if sections_to_run is not None and "4" not in sections_to_run:
+            print("  Skipped — section 4 not selected via --sections")
+            return
         section("4  Maps (per model, per lead)")
         SEASONS = ["DJF", "MAM", "JJA", "SON"]
 
@@ -859,6 +888,9 @@ def main():
     #    5 rows (Annual + seasons) × 4 cols — per model per lead
     # ══════════════════════════════════════════════════════════════════════════
     def sec5():
+        if sections_to_run is not None and "5" not in sections_to_run:
+            print("  Skipped — section 5 not selected via --sections")
+            return
         section("5  MSE variance decomposition maps")
 
         # Only models that have an anom view
@@ -933,6 +965,9 @@ def main():
     # 6  9-panel MSE decomposition — bias sign × anomaly sign (IFS)
     # ══════════════════════════════════════════════════════════════════════════
     def sec6():
+        if sections_to_run is not None and "6" not in sections_to_run:
+            print("  Skipped — section 6 not selected via --sections")
+            return
         if not HAS_ANOM:
             print("  Skipped — ifs_anom not registered")
             return
@@ -999,6 +1034,9 @@ def main():
     # 7  Joint PDF — observed anomaly vs forecast bias (IFS + AIFS)
     # ══════════════════════════════════════════════════════════════════════════
     def sec7():
+        if sections_to_run is not None and "7" not in sections_to_run:
+            print("  Skipped — section 7 not selected via --sections")
+            return
         if not HAS_ANOM:
             print("  Skipped — ifs_anom not registered")
             return
@@ -1109,6 +1147,9 @@ def main():
     # 8  Histograms — county-level bias/MAE distributions
     # ══════════════════════════════════════════════════════════════════════════
     def sec8():
+        if sections_to_run is not None and "8" not in sections_to_run:
+            print("  Skipped — section 8 not selected via --sections")
+            return
         section("8  Histograms")
         # Use 4 representative leads; fall back to all if fewer than 4 available
         KEY_LEADS = sorted(lt for lt in [24, 72, 120, 240] if lt in set(all_leads))
@@ -1175,6 +1216,9 @@ def main():
     # 9  Koppen-Geiger climate region interactions
     # ══════════════════════════════════════════════════════════════════════════
     def sec9():
+        if sections_to_run is not None and "9" not in sections_to_run:
+            print("  Skipped — section 9 not selected via --sections")
+            return
         if not HAS_KOPPEN:
             print("  Skipped — koppen view not registered")
             return
@@ -1281,6 +1325,9 @@ def main():
     #     - Scatter grid at lead_default for top variables
     # ══════════════════════════════════════════════════════════════════════════
     def sec10():
+        if sections_to_run is not None and "10" not in sections_to_run:
+            print("  Skipped — section 10 not selected via --sections")
+            return
         model_input = os.path.join(
             os.path.dirname(__file__), "..", "notebooks", "data", "model_input.parquet"
         )
