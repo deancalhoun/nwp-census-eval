@@ -28,6 +28,7 @@ ACS_DIR = os.path.join(SCRATCH, "census/data/acs5")
 
 # Koppen-Geiger climate classification GeoTIFF
 KOPPEN_PATH = os.path.join(SCRATCH, "koppen_geiger/1991_2020/koppen_geiger_0p5.tif")
+ELEV_GTOPO30_DIR = "/glade/campaign/collections/rda/data/d758000/elevtiles"
 
 # Aggregated output directory — ALL processed parquets go here, including ERA5 climatology
 AGGREGATED_DIR = os.path.join(SCRATCH, "aggregated")
@@ -40,9 +41,9 @@ ERA5_CLIM_PATH = os.path.join(
 
 # Date ranges
 IFS_START  = "2016-01-01"
-IFS_END    = "2026-02-28"
-AIFS_START = "2024-03-01"
-AIFS_END   = "2026-02-28"
+IFS_END    = "2026-03-10"
+AIFS_START = "2024-03-11"
+AIFS_END   = "2026-03-10"
 
 ERA5_CLIM_START = "1991-01-01"
 ERA5_CLIM_END   = "2020-12-31"

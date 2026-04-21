@@ -125,12 +125,27 @@ class GeoAggregator:
         else:
             with xr.open_dataset(grid_path) as ds:
                 sample_datafile = ds.load().copy(deep=True)
-        # Pre-process for xagg: convert lon 0-360 to -180-180, add bounds
+    
+        # Pre-process for xagg: convert lon 0-360 to -180-180, rename coords
         sample_datafile = fix_ds(sample_datafile)
+    
+        # Load shapefile before subsetting so we can use its extent
+        self.shapefile = gpd.read_file(shapefile_path).to_crs(coords)
+    
+        # Subset grid to shapefile extent before building weightmap.
+        lon_min, lat_min, lon_max, lat_max = self.shapefile.total_bounds
+        lat_vals = sample_datafile['lat'].values
+        lon_vals = sample_datafile['lon'].values
+        lat_mask = (lat_vals >= lat_min) & (lat_vals <= lat_max)
+        lon_mask = (lon_vals >= lon_min) & (lon_vals <= lon_max)
+        sample_datafile = sample_datafile.sel(
+            lat=sample_datafile['lat'][lat_mask],
+            lon=sample_datafile['lon'][lon_mask]
+        )
+    
         _add_writable_bnds(sample_datafile)
         self.grid = sample_datafile[['lat', 'lon']].coords
-        self.shapefile = gpd.read_file(shapefile_path).to_crs(coords)
-
+    
         # Build or load weightmap
         cached = None
         if cache_dir is not None:
@@ -146,7 +161,7 @@ class GeoAggregator:
             self.weightmap = xagg.pixel_overlaps(sample_datafile, self.shapefile, silent=silent)
             if cache_dir is not None:
                 _save_weightmap_cache(self.weightmap, cache_key, cache_dir)
-
+    
         self.shapefile_path = shapefile_path
         self.latname = 'lat'  # fix_ds renames to lat/lon
         self.lonname = 'lon'

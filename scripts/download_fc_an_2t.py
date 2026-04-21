@@ -26,6 +26,16 @@ def _extend_end_date_for_analysis(end_str, lead_times):
     extended = end_date + timedelta(days=extra_days)
     return extended.strftime("%Y-%m-%d")
 
+def _extend_start_date_for_forecast(start_str, lead_times):
+    """
+    Extend the start date backward so that all leads are available
+    for the first valid time in the analysis period.
+    """
+    max_lead_hours = max(int(lead) for lead in lead_times)
+    extra_days = max_lead_hours // 24
+    start_date = datetime.strptime(start_str, "%Y-%m-%d")
+    extended = start_date - timedelta(days=extra_days)
+    return extended.strftime("%Y-%m-%d")
 
 def _validate_forecast(client, label):
     """
@@ -94,10 +104,11 @@ def main(argv=None):
 
     ### IFS FORECAST
     # Forecast client uses the original end date
+    fc_start = _extend_start_date_for_forecast(IFS_START, lead_times)
     fc_client = ECMWFDataClient(
         base_dir=IFS_BASE_DIR,
         param=param,
-        start=IFS_START,
+        start=fc_start,
         end=IFS_END,
         lead_times=lead_times,
         init_hours=init_hours,
@@ -124,10 +135,11 @@ def main(argv=None):
     )
 
     ### AIFS FORECAST
+    fc_start = _extend_start_date_for_forecast(AIFS_START, lead_times)
     client = ECMWFDataClient(
         base_dir=AIFS_BASE_DIR,
         param=param,
-        start=AIFS_START,
+        start=fc_start,
         end=AIFS_END,
         lead_times=lead_times,
         init_hours=init_hours,

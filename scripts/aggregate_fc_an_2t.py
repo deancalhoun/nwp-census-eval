@@ -464,12 +464,13 @@ def main(n_parallel=1, write_full_tables=False):
     # an_end: derived from fc_end + max lead time so the AN covers every valid_time
     # reachable from the FC init range; this also means the AN automatically extends
     # into the next year when IFS_END is updated (e.g. to 2026-XX-XX).
+    fc_start = pd.Timestamp(START) - pd.Timedelta(hours=max(LEAD_TIMES))
     fc_end = pd.Timestamp(END) + pd.Timedelta(hours=12)
     an_end = fc_end + pd.Timedelta(hours=max(LEAD_TIMES))
     t_disc = time.time()
     logging.info("Building file lists ...")
-    fc_files_ifs  = build_fc_files(FC_DIR,      START, fc_end, FC_FREQ, LEAD_TIMES)
-    fc_files_aifs = build_fc_files(AIFS_FC_DIR, START, fc_end, FC_FREQ, LEAD_TIMES)
+    fc_files_ifs  = build_fc_files(FC_DIR,      fc_start, fc_end, FC_FREQ, LEAD_TIMES)
+    fc_files_aifs = build_fc_files(AIFS_FC_DIR, fc_start, fc_end, FC_FREQ, LEAD_TIMES)
     an_files      = build_an_files(AN_DIR,      START, an_end, AN_FREQ)
     logging.info(
         "[%.0fs] Found %d IFS fc, %d AIFS fc, %d IFS an files",
